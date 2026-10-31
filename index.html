@@ -208,6 +208,7 @@ mark.ins { background: var(--ok-soft); color: #0a6b4c; border-radius: 3px; paddi
     <label class="chip"><input type="radio" name="mode" value="role"> 角色化</label>
     <label class="chip"><input type="radio" name="mode" value="redact"> 涂黑</label>
     <label class="chip"><input type="checkbox" id="opt-full"> 姓名全掩码</label>
+    <label class="chip"><input type="checkbox" id="opt-docx"> PDF 也输出 Word/TXT</label>
   </div>
 
   <div class="options" id="options">
@@ -1335,7 +1336,8 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
 
   function paragraph(text) {
-    return '<w:p><w:pPr><w:spacing w:line="360" w:lineRule="auto"/></w:pPr>' +
+    text = String(text).replace(/^[\s\u3000]+/, "");
+    return '<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:line="360" w:lineRule="auto"/></w:pPr>' +
       '<w:r><w:rPr><w:rFonts w:ascii="宋体" w:eastAsia="宋体" w:hAnsi="宋体"/>' +
       '<w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr>' +
       '<w:t xml:space="preserve">' + esc(text) + "</w:t></w:r></w:p>";
@@ -1709,7 +1711,7 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
         const width = (it.width || 0) * scale;
         const x0 = x + (width * u0) / units;
         const x1 = x + (width * u1) / units;
-        const pad = Math.max(1, fontH * 0.08);   // 安全边距：宁可多盖一点都不漏
+        const pad = Math.max(0.8, fontH * 0.04);   // 安全边距：宁可多盖一点都不漏
         const top = y - fontH - pad * 0.6;
         const bottom = y + fontH * 0.12 + pad * 0.3;
         ctx.fillRect(x0 - pad, top, Math.max(x1 - x0, 1.5) + pad * 2, bottom - top);
@@ -1857,17 +1859,19 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
         showPdfGuide([file.name], "这份 PDF 没有文字层（扫描件）");
         return null;
       }
-      const docxBytes = await window.LR_DOCXWRITE.makeDocx(text.split("\n"));
-      return {
-        file, name, ext: "pdf", redactor, redactedTexts: [text],
-        outFiles: [
-          { name: `${name}.脱敏.pdf`,
-            blob: new Blob([out.pdf], { type: "application/pdf" }) },
-          { name: `${name}.脱敏.docx`,
-            blob: new Blob([docxBytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }) },
-          { name: `${name}.脱敏.txt`, blob: textBlob(text) },
-        ],
-      };
+      const outFiles = [
+        { name: `${name}.脱敏.pdf`,
+          blob: new Blob([out.pdf], { type: "application/pdf" }) },
+      ];
+      if ($("#opt-docx").checked) {
+        const docxBytes = await window.LR_DOCXWRITE.makeDocx(text.split("\n"));
+        outFiles.push({
+          name: `${name}.脱敏.docx`,
+          blob: new Blob([docxBytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }),
+        });
+        outFiles.push({ name: `${name}.脱敏.txt`, blob: textBlob(text) });
+      }
+      return { file, name, ext: "pdf", redactor, redactedTexts: [text], outFiles };
     }
 
     if (ext === "docx") {
@@ -1944,7 +1948,7 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
       </div>
       <div class="stats">${stats}</div>
       <div class="actions">
-        <button class="btn small primary" data-act="out">下载脱敏件</button>
+        <button class="btn small primary" data-act="out">${res.ext === "pdf" ? "下载脱敏 PDF" : "下载脱敏件"}</button>
         <button class="btn small" data-act="compare">对照.txt</button>
         <button class="btn small" data-act="mapping">映射表.json</button>
         <button class="btn small" data-act="csv">明细.csv</button>
