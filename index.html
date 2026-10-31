@@ -145,6 +145,21 @@ mark.ins { background: var(--ok-soft); color: #0a6b4c; border-radius: 3px; paddi
   .card .head { flex-wrap: wrap; }
 }
 
+.tabs { display: flex; gap: 6px; margin: 24px 0 8px; border-bottom: 1px solid var(--line); }
+.tab {
+  appearance: none; border: none; background: none; font: inherit; cursor: pointer;
+  padding: 10px 16px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.rec {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 14px 18px; border-bottom: 1px solid var(--line); font-size: 14px;
+}
+.rec:last-child { border-bottom: none; }
+.rec .seq { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12.5px; }
+.rec .nm { font-weight: 600; flex: 1; min-width: 180px; word-break: break-all; }
+.rec select { padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 12.5px; }
+
 </style>
 </head>
 <body>
@@ -153,15 +168,22 @@ mark.ins { background: var(--ok-soft); color: #0a6b4c; border-radius: 3px; paddi
   <header>
     <div class="mark">脱</div>
     <h1>法律文书脱敏</h1>
-    <p class="sub">当事人姓名、单位名、住址、身份证、电话换成替身 · 全部在本机浏览器内完成，文件不上传</p>
+    <p class="sub">当事人姓名、单位名、住址、身份证、电话换成替身 · 全部在本机浏览器内完成，文件不上传
+      <span style="color:#9aa1ad;font-size:12px">· v0.3 · 10-31 21:11</span></p>
   </header>
 
+  <div class="tabs">
+    <button class="tab active" data-tab="work">脱敏</button>
+    <button class="tab" data-tab="lib">案例库 <span id="lib-count"></span></button>
+  </div>
+
+  <section id="tab-work">
   <div class="dropzone" id="drop">
     <div class="big">把文书拖进来，或 <span class="browse">点这里选择</span></div>
-    <div class="hint">支持 .docx / .txt / .md / .html；docx 会保留原格式</div>
+    <div class="hint">支持 .docx / .txt / .md / .html / .pdf；docx 保留格式，PDF 出涂黑版 + 可读版</div>
     <div class="hint" style="margin-top:8px">
-      PDF / 图片：先双击 <b>图片PDF转文字.bat</b>（文字会自动复制到剪贴板），再点下面的
-      <b>粘贴文字</b>
+      <b>扫描件 / 拍照</b>（整页是图片的那种）：先双击 <b>图片PDF转文字.bat</b>（文字会自动进剪贴板），
+      再点下面的 <b>粘贴文字</b>
     </div>
     <input type="file" id="file" multiple accept=".docx,.txt,.md,.html,.pdf,.png,.jpg,.jpeg" hidden>
   </div>
@@ -203,7 +225,35 @@ mark.ins { background: var(--ok-soft); color: #0a6b4c; border-radius: 3px; paddi
     <button class="btn primary" id="downloadAll" disabled>全部下载</button>
   </div>
 
+  <div class="toolbar" style="margin-top:10px">
+    <button class="btn" id="restore-open">一键还原</button>
+    <span style="font-size:12.5px;color:var(--muted)">把「脱敏件 + 映射表」放回来，还原成原文</span>
+  </div>
+
+  <div id="restore-panel" style="display:none;margin-top:12px">
+    <div class="options" style="gap:14px">
+      <label class="chip" style="border-style:dashed">① 脱敏件 <input type="file" id="rs-file" style="display:none"></label>
+      <label class="chip" style="border-style:dashed">② 映射表.json <input type="file" id="rs-map" accept=".json" style="display:none"></label>
+      <button class="btn primary" id="rs-run">还原</button>
+      <button class="btn" id="rs-close">收起</button>
+    </div>
+    <div id="rs-tip" style="font-size:12.5px;color:var(--muted);margin-top:8px"></div>
+  </div>
+
   <div id="list"><div class="empty" id="empty">还没有文件。丢一份裁判文书进来试试。</div></div>
+  </section>
+
+  <section id="tab-lib" style="display:none">
+    <div class="toolbar" style="margin-top:16px">
+      <input id="lib-search" placeholder="搜索文件名 / 流水号" style="flex:1;padding:8px 12px;border:1px solid var(--line);border-radius:10px;font:inherit">
+      <select id="lib-cat" style="padding:8px 12px;border:1px solid var(--line);border-radius:10px;font:inherit">
+        <option value="">全部分类</option>
+      </select>
+      <button class="btn" id="lib-refresh">刷新</button>
+      <button class="btn primary" id="lib-export">全部导出</button>
+    </div>
+    <div id="lib-list"><div class="empty">案例库还是空的。脱敏完的文件会自动存进来。</div></div>
+  </section>
 
   <details class="foot">
     <summary style="cursor:pointer;font-weight:600;color:#475467">脱敏口径与使用说明</summary>
@@ -1190,6 +1240,77 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
   root.LR_ZIP = { readZip, writeZip, crc32 };
 })(typeof window !== "undefined" ? window : globalThis);
 
+/* 本地案例库 / 任务历史（IndexedDB，数据不出本机） */
+(function (root) {
+  const DB_NAME = "lr_library";
+  const STORE = "records";
+  let dbp = null;
+
+  function openDb() {
+    if (dbp) return dbp;
+    dbp = new Promise((res, rej) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE)) {
+          const os = db.createObjectStore(STORE, { keyPath: "id", autoIncrement: true });
+          os.createIndex("createdAt", "createdAt");
+        }
+      };
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    });
+    return dbp;
+  }
+
+  async function add(rec) {
+    const db = await openDb();
+    return new Promise((res, rej) => {
+      const t = db.transaction(STORE, "readwrite");
+      const r = t.objectStore(STORE).add(rec);
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+
+  async function all() {
+    const db = await openDb();
+    return new Promise((res, rej) => {
+      const t = db.transaction(STORE, "readonly");
+      const r = t.objectStore(STORE).getAll();
+      r.onsuccess = () => res(r.result || []);
+      r.onerror = () => rej(r.error);
+    });
+  }
+
+  async function remove(id) {
+    const db = await openDb();
+    return new Promise((res, rej) => {
+      const t = db.transaction(STORE, "readwrite");
+      const r = t.objectStore(STORE).delete(id);
+      r.onsuccess = () => res(true);
+      r.onerror = () => rej(r.error);
+    });
+  }
+
+  async function patch(id, fields) {
+    const db = await openDb();
+    return new Promise((res, rej) => {
+      const t = db.transaction(STORE, "readwrite");
+      const os = t.objectStore(STORE);
+      const g = os.get(id);
+      g.onsuccess = () => {
+        const rec = Object.assign({}, g.result, fields);
+        os.put(rec);
+        res(rec);
+      };
+      g.onerror = () => rej(g.error);
+    });
+  }
+
+  root.LR_STORE = { add, all, remove, patch };
+})(typeof window !== "undefined" ? window : globalThis);
+
 /* 从纯文本生成 docx（PDF 转过来没有原格式，就生成一份干净的） */
 (function (root) {
   const enc = new TextEncoder();
@@ -1364,8 +1485,43 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     return { text: out, redactor, results };
   }
 
+  /** 还原：把「替身」按映射表换回原文（逐段处理，保留格式） */
+  async function restoreDocx(bytes, pairs) {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    const files = await ZIP.readZip(ab);
+    const docXml = files.get("word/document.xml");
+    const xml = dec.decode(docXml);
+
+    const sorted = pairs.slice().sort((a, b) => b[0].length - a[0].length);
+    PARA_RE.lastIndex = 0;
+    let out = "", last = 0, m;
+    while ((m = PARA_RE.exec(xml))) {
+      out += xml.slice(last, m.index);
+      const { text } = scanParagraph(m[0]);
+      const spans = [];
+      for (const [rep, orig] of sorted) {
+        let from = 0;
+        while (true) {
+          const idx = text.indexOf(rep, from);
+          if (idx < 0) break;
+          if (!spans.some(([a, b]) => idx < b && a < idx + rep.length)) {
+            spans.push([idx, idx + rep.length, orig]);
+          }
+          from = idx + rep.length;
+        }
+      }
+      spans.sort((a, b) => a[0] - b[0]);
+      out += spans.length ? rewriteParagraph(m[0], spans) : m[0];
+      last = m.index + m[0].length;
+    }
+    out += xml.slice(last);
+    files.set("word/document.xml", enc.encode(out));
+    return await ZIP.writeZip(files);
+  }
+
   root.LR_DOCX = { processDocx, processText, collectParagraphs, rebuildXml,
-                   rewriteParagraph, scanParagraph, unescapeXml, escapeXml };
+                   rewriteParagraph, scanParagraph, unescapeXml, escapeXml, restoreDocx };
 })(typeof window !== "undefined" ? window : globalThis);
 
 /* 浏览器内 PDF 文字提取（pdf.js，worker 用内联的 gzip 包启动，不联网） */
@@ -1396,13 +1552,17 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     return out;
   }
 
-  async function extract(bytes) {
+  async function open(bytes) {
     await ensureWorker();
-    const doc = await root.pdfjsLib.getDocument({
+    return root.pdfjsLib.getDocument({
       data: bytes,
       isEvalSupported: false,
       useSystemFonts: false,
     }).promise;
+  }
+
+  async function extract(bytes) {
+    const doc = await open(bytes);
     const pages = [];
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i);
@@ -1413,7 +1573,204 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     return { pages, numPages: doc.numPages };
   }
 
-  root.LR_PDF = { extract };
+  root.LR_PDF = { extract, open, linesOf };
+})(typeof window !== "undefined" ? window : globalThis);
+
+/* PDF 原地脱敏：渲染成图 → 按识别位置涂黑 → 重新组装 PDF（无文字层，复制不出原文） */
+(function (root) {
+  const enc = new TextEncoder();
+
+  // 写字宽度估权：中文 1.0，数字/字母 0.5，空格 0.25（比等宽切分准得多）
+  function unitWidth(ch) {
+    const c = ch.codePointAt(0);
+    if (c >= 0x4e00 && c <= 0x9fff) return 1.0;
+    if (c >= 0xff00 && c <= 0xffef) return 1.0;   // 全角标点
+    if (ch === " ") return 0.25;
+    if (c < 0x80) return 0.5;
+    return 1.0;
+  }
+
+  /** 极简 PDF 写入：每页一张 JPEG 全屏铺满 */
+  function buildPdf(pages) {
+    const chunks = [];
+    let offset = 0;
+    const push = (u8) => { chunks.push(u8); offset += u8.length; };
+    const pushStr = (s) => push(enc.encode(s));
+
+    const objects = [];               // {id, bytes}
+    const addObj = (id, body) => objects.push({ id, bytes: body });
+
+    const pageCount = pages.length;
+    const kids = pages.map((_, i) => `${4 + i * 3} 0 R`).join(" ");
+
+    pushStr("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+
+    // 1 catalog, 2 pages
+    const catalog = `1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n`;
+    const pagesObj = `2 0 obj\n<</Type/Pages/Kids[${kids}]/Count ${pageCount}>>\nendobj\n`;
+
+    const offsets = {};
+    const write = (id, text) => {
+      offsets[id] = offset;
+      pushStr(text);
+    };
+
+    write(1, catalog);
+    write(2, pagesObj);
+
+    pages.forEach((pg, i) => {
+      const pageId = 4 + i * 3;
+      const contentId = pageId + 1;
+      const imageId = pageId + 2;
+      const w = pg.pw.toFixed(2), h = pg.ph.toFixed(2);
+
+      write(pageId, `${pageId} 0 obj\n<</Type/Page/Parent 2 0 R/MediaBox[0 0 ${w} ${h}]` +
+        `/Resources<</XObject<</Im0 ${imageId} 0 R>>>>/Contents ${contentId} 0 R>>\nendobj\n`);
+
+      // 图片铺满整页
+      const content = `q\n${w} 0 0 ${h} 0 0 cm\n/Im0 Do\nQ\n`;
+      offsets[contentId] = offset;
+      pushStr(`${contentId} 0 obj\n<</Length ${content.length}>>\nstream\n`);
+      pushStr(content);
+      pushStr("\nendstream\nendobj\n");
+
+      // 图像 XObject（JPEG 直接 DCTDecode，不重新压缩）
+      offsets[imageId] = offset;
+      pushStr(`${imageId} 0 obj\n<</Type/XObject/Subtype/Image/Width ${pg.width}` +
+        `/Height ${pg.height}/ColorSpace/DeviceRGB/BitsPerComponent 8` +
+        `/Filter/DCTDecode/Length ${pg.jpeg.length}>>\nstream\n`);
+      push(pg.jpeg);
+      pushStr("\nendstream\nendobj\n");
+    });
+
+    const maxId = 4 + (pageCount - 1) * 3 + 2;
+    const xrefStart = offset;
+    let xref = `xref\n0 ${maxId + 1}\n0000000000 65535 f \n`;
+    for (let id = 1; id <= maxId; id++) {
+      const off = offsets[id] || 0;
+      xref += String(off).padStart(10, "0") + " 00000 n \n";
+    }
+    pushStr(xref);
+    pushStr(`trailer\n<</Size ${maxId + 1}/Root 1 0 R>>\nstartxref\n${xrefStart}\n%%EOF\n`);
+
+    const total = chunks.reduce((s, c) => s + c.length, 0);
+    const out = new Uint8Array(total);
+    let p = 0;
+    for (const c of chunks) { out.set(c, p); p += c.length; }
+    return out;
+  }
+
+  /** 按「与检测完全一致」的规则拼页文本，并记下每个 item 的起始偏移 */
+  function pageTextOf(items) {
+    let text = "";
+    const starts = [];
+    for (const it of items) {
+      starts.push(text.length);
+      text += it.str;
+      if (it.hasEOL) text += "\n";
+    }
+    return { text, starts };
+  }
+
+  /** 把一页里的敏感 span 画成黑块 */
+  function paintPage(canvas, items, starts, spans, viewport) {
+    const ctx = canvas.getContext("2d");
+    const scale = viewport.scale;
+
+    // 每个字符属于哪个 item
+    const chars = [];
+    items.forEach((it, idx) => {
+      for (let k = 0; k < it.str.length; k++) chars.push(idx);
+    });
+
+    ctx.fillStyle = "#000";
+    for (const [s, e] of spans) {
+      // 找到与 span 相交的 item
+      items.forEach((it, idx) => {
+        const a = starts[idx];
+        const b = a + it.str.length;
+        if (b <= s || e <= a) return;
+        const i0 = Math.max(s, a) - a;
+        const i1 = Math.min(e, b) - a;
+        const len = it.str.length || 1;
+        let units = 0, u0 = 0, u1 = 0;
+        for (let k = 0; k < len; k++) {
+          const u = unitWidth(it.str[k]);
+          if (k < i0) u0 += u;
+          if (k < i1) u1 += u;
+          units += u;
+        }
+        if (!units) units = 1;
+
+        const m = pdfjsLib.Util.transform(viewport.transform, it.transform);
+        const x = m[4];
+        const y = m[5];
+        const fontH = Math.hypot(m[2], m[3]) || Math.abs(it.height * scale) || 12;
+        const width = (it.width || 0) * scale;
+        const x0 = x + (width * u0) / units;
+        const x1 = x + (width * u1) / units;
+        const pad = Math.max(1, fontH * 0.08);   // 安全边距：宁可多盖一点都不漏
+        const top = y - fontH - pad * 0.6;
+        const bottom = y + fontH * 0.12 + pad * 0.3;
+        ctx.fillRect(x0 - pad, top, Math.max(x1 - x0, 1.5) + pad * 2, bottom - top);
+      });
+    }
+  }
+
+  async function redactToPdf(bytes, redactor, opts) {
+    opts = opts || {};
+    const dpiScale = opts.width ? null : 1;
+    const targetWidth = opts.width || 1500;
+    const quality = opts.quality || 0.86;
+
+    const doc = await root.LR_PDF.open(bytes);
+    const pageTexts = [];
+    const pageMeta = [];
+
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      const items = content.items.filter((it) => it.str !== undefined);
+      const viewport1 = page.getViewport({ scale: 1 });
+      const { text, starts } = pageTextOf(items);
+      pageTexts.push(text);
+      pageMeta.push({ page, items, starts, viewport1 });
+    }
+
+    // 先跑识别（与网页其它格式完全同一套引擎）
+    const results = redactor.prepare(pageTexts);
+
+    const outPages = [];
+    for (let i = 0; i < pageMeta.length; i++) {
+      const { page, items, starts, viewport1 } = pageMeta[i];
+      const scale = targetWidth / viewport1.width;
+      const viewport = page.getViewport({ scale });
+
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+
+      const spans = (results[i].spans || []).map(([s, e]) => [s, e]);
+      if (spans.length) paintPage(canvas, items, starts, spans, viewport);
+
+      const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+      const jpeg = new Uint8Array(await blob.arrayBuffer());
+
+      outPages.push({
+        jpeg,
+        width: canvas.width,
+        height: canvas.height,
+        pw: viewport1.width,     // 用原始页面尺寸（pt），版式不变
+        ph: viewport1.height,
+      });
+      page.cleanup();
+    }
+
+    return { pdf: buildPdf(outPages), pageCount: outPages.length, results };
+  }
+
+  root.LR_PDFREDACT = { redactToPdf, buildPdf };
 })(typeof window !== "undefined" ? window : globalThis);
 
 /* 页面逻辑：拖拽 → 浏览器内脱敏 → 下载 */
@@ -1487,26 +1844,28 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
       maskStyle: $("#opt-full").checked ? "full" : "surname",
     };
     if (ext === "pdf") {
-      let pages;
+      const redactor = new window.LR_ENGINE.Redactor(config(), opts.mode, opts.maskStyle);
+      let out;
       try {
-        ({ pages } = await window.LR_PDF.extract(buf));
+        out = await window.LR_PDFREDACT.redactToPdf(buf, redactor, { width: 1500 });
       } catch (err) {
         showPdfGuide([file.name], "这个 PDF 读不出来（" + (err && err.message || err) + "）");
         return null;
       }
-      const text = pages.join("\n\n");
+      const text = out.results.map((r) => r.redacted).join("\n\n");
       if (text.replace(/\s/g, "").length < 20) {
         showPdfGuide([file.name], "这份 PDF 没有文字层（扫描件）");
         return null;
       }
-      const { text: out, redactor } = D.processText(text, config(), opts);
-      const docxBytes = await window.LR_DOCXWRITE.makeDocx(out.split("\n"));
+      const docxBytes = await window.LR_DOCXWRITE.makeDocx(text.split("\n"));
       return {
-        file, name, ext: "pdf", redactor, redactedTexts: [out],
+        file, name, ext: "pdf", redactor, redactedTexts: [text],
         outFiles: [
+          { name: `${name}.脱敏.pdf`,
+            blob: new Blob([out.pdf], { type: "application/pdf" }) },
           { name: `${name}.脱敏.docx`,
             blob: new Blob([docxBytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }) },
-          { name: `${name}.脱敏.txt`, blob: textBlob(out) },
+          { name: `${name}.脱敏.txt`, blob: textBlob(text) },
         ],
       };
     }
@@ -1706,7 +2065,7 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
       const base = file.name.replace(/\.[^.]+$/, "");
       try {
         const res = await processOne(file, base);
-        if (res) state.results.push(res);
+        if (res) { state.results.push(res); await saveRecord(res); }
       } catch (err) {
         const div = document.createElement("div");
         div.className = "card";
@@ -1790,12 +2149,205 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
   $("#paste-run").addEventListener("click", () => redactPasted($("#paste-text").value));
 
   $("#downloadAll").addEventListener("click", downloadAll);
+
+  document.querySelectorAll(".tab").forEach((t) =>
+    t.addEventListener("click", () => switchTab(t.dataset.tab)));
+
+  $("#restore-open").addEventListener("click", () => {
+    const p = $("#restore-panel");
+    p.style.display = p.style.display === "none" ? "block" : "none";
+  });
+  $("#rs-close").addEventListener("click", () => { $("#restore-panel").style.display = "none"; });
+  $("#rs-run").addEventListener("click", doRestore);
+  $("#rs-file").addEventListener("change", () => {
+    const n = $("#rs-file").files[0];
+    restoreTip(n ? "已选：" + n.name : "");
+  });
+  $("#lib-search").addEventListener("input", renderLibrary);
+  $("#lib-cat").addEventListener("change", renderLibrary);
+  $("#lib-refresh").addEventListener("click", renderLibrary);
+  $("#lib-export").addEventListener("click", downloadAllRecords);
+  $("#lib-list").addEventListener("click", handleLibClick);
+  $("#lib-list").addEventListener("change", handleLibClick);
+  updateLibCount();
   $("#clear").addEventListener("click", () => {
     state.results = [];
     list.innerHTML = "";
     list.appendChild(empty);
     render();
   });
+
+
+  /* ---------- 任务记录 / 案例库 ---------- */
+  const CATS = ["未分类", "民事", "刑事", "行政", "合同纠纷", "劳动争议", "其他"];
+
+  function nextSeq() {
+    const n = Number(localStorage.getItem("lr-seq") || "10000") + 1;
+    localStorage.setItem("lr-seq", String(n));
+    return n;
+  }
+
+  async function saveRecord(res) {
+    try {
+      const files = [];
+      for (const f of res.outFiles) files.push({ name: f.name, blob: f.blob });
+      await window.LR_STORE.add({
+        seq: nextSeq(),
+        name: res.file.name,
+        ext: res.ext,
+        mode: res.redactor.mode,
+        count: res.redactor.rows.length,
+        category: "未分类",
+        createdAt: Date.now(),
+        files,
+      });
+      updateLibCount();
+    } catch (e) {
+      console.warn("记录保存失败", e);
+    }
+  }
+
+  async function updateLibCount() {
+    try {
+      const all = await window.LR_STORE.all();
+      const el = $("#lib-count");
+      if (el) el.textContent = all.length ? `(${all.length})` : "";
+    } catch (e) { /* ignore */ }
+  }
+
+  function fmtTime(ts) {
+    const d = new Date(ts);
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  async function renderLibrary() {
+    const box = $("#lib-list");
+    const kw = ($("#lib-search").value || "").trim().toLowerCase();
+    const cat = $("#lib-cat").value;
+    let all = [];
+    try { all = await window.LR_STORE.all(); } catch (e) { all = []; }
+
+    // 分类下拉
+    const sel = $("#lib-cat");
+    const cats = [...new Set([...CATS, ...all.map((r) => r.category || "未分类")])];
+    sel.innerHTML = `<option value="">全部分类</option>` +
+      cats.map((c) => `<option value="${c}">${c}</option>`).join("");
+    sel.value = cat;
+
+    const rows = all
+      .filter((r) => (!cat || (r.category || "未分类") === cat))
+      .filter((r) => !kw || r.name.toLowerCase().includes(kw) || String(r.seq).includes(kw))
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+    if (!rows.length) {
+      box.innerHTML = `<div class="empty">${all.length ? "没有匹配的记录" : "案例库还是空的。脱敏完的文件会自动存进来。"}</div>`;
+      return;
+    }
+
+    box.innerHTML = `<div class="card">` + rows.map((r) => `
+      <div class="rec" data-id="${r.id}">
+        <span class="seq">#${r.seq}</span>
+        <span class="nm">${esc(r.name)}</span>
+        <span class="stat">${r.mode} · ${r.count} 处</span>
+        <span class="stat">${fmtTime(r.createdAt)}</span>
+        <select data-act="cat">${cats.map((c) =>
+          `<option ${((r.category || "未分类") === c) ? "selected" : ""}>${c}</option>`).join("")}</select>
+        <button class="btn small" data-act="dl">下载</button>
+        <button class="btn small" data-act="del">删除</button>
+      </div>`).join("") + `</div>`;
+  }
+
+  async function downloadAllRecords() {
+    let all = [];
+    try { all = await window.LR_STORE.all(); } catch (e) { return; }
+    if (!all.length) { alert("案例库是空的"); return; }
+    const entries = [];
+    const seen = new Set();
+    const uniq = (n) => { let x = n, i = 2; while (seen.has(x)) { x = n.replace(/(\.[^.]+)$/, `-${i}$1`); i++; } seen.add(x); return x; };
+    for (const r of all) {
+      const dir = `#${r.seq}_${r.category || "未分类"}/`;
+      for (const f of r.files) {
+        entries.push([uniq(dir + f.name), new Uint8Array(await f.blob.arrayBuffer())]);
+      }
+    }
+    const bytes = await window.LR_ZIP.writeZip(entries);
+    download("案例库导出.zip", new Blob([bytes], { type: "application/zip" }));
+  }
+
+  async function handleLibClick(e) {
+    const btn = e.target.closest("[data-act]");
+    const row = e.target.closest(".rec");
+    if (!row) return;
+    const id = Number(row.dataset.id);
+    const act = (btn && btn.dataset.act) || (e.target.tagName === "SELECT" ? "cat" : null);
+
+    if (act === "cat") {
+      await window.LR_STORE.patch(id, { category: row.querySelector("select").value });
+      return;
+    }
+    if (act === "del") {
+      if (!confirm("从案例库删除这条记录？（不会动原文件）")) return;
+      await window.LR_STORE.remove(id);
+      renderLibrary(); updateLibCount();
+      return;
+    }
+    if (act === "dl") {
+      const all = await window.LR_STORE.all();
+      const rec = all.find((r) => r.id === id);
+      if (!rec) return;
+      for (const f of rec.files) download(f.name, f.blob);
+    }
+  }
+
+  /* ---------- 一键还原 ---------- */
+  function restoreTip(msg) { $("#rs-tip").textContent = msg || ""; }
+
+  async function doRestore() {
+    const fileInput = $("#rs-file");
+    const mapInput = $("#rs-map");
+    if (!fileInput.files.length || !mapInput.files.length) {
+      restoreTip("两个文件都要选：脱敏件 + 对应的映射表.json");
+      return;
+    }
+    try {
+      const map = JSON.parse(await mapInput.files[0].text());
+      const pairs = (map.entities || []).map((e) => [e.replacement, e.original]);
+      if (!pairs.length) { restoreTip("映射表里没有实体，无法还原"); return; }
+
+      const f = fileInput.files[0];
+      const buf = new Uint8Array(await f.arrayBuffer());
+      const base = f.name.replace(/\.[^.]+$/, "").replace(/\.(脱敏|还原)$/, "");
+
+      if (/\.pdf$/i.test(f.name)) {
+        restoreTip("PDF 涂黑版是把文字删掉重排成图，按设计不可还原。要还原请用 docx 版。");
+        return;
+      }
+      if (/\.docx$/i.test(f.name)) {
+        const out = await window.LR_DOCX.restoreDocx(buf, pairs);
+        download(`${base}.还原.docx`, new Blob([out], {
+          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }));
+        restoreTip("已还原，检查下载文件。");
+        return;
+      }
+      let text = new TextDecoder().decode(buf);
+      for (const [rep, orig] of pairs.slice().sort((a, b) => b[0].length - a[0].length)) {
+        text = text.split(rep).join(orig);
+      }
+      download(`${base}.还原.txt`, textBlob(text));
+      restoreTip("已还原，检查下载文件。");
+    } catch (e) {
+      restoreTip("还原失败：" + (e && e.message || e));
+    }
+  }
+
+  /* ---------- 标签切换 ---------- */
+  function switchTab(name) {
+    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+    $("#tab-work").style.display = name === "work" ? "" : "none";
+    $("#tab-lib").style.display = name === "lib" ? "" : "none";
+    if (name === "lib") renderLibrary();
+  }
 
   // 便于自动化测试
   window.LR_APP = { addFiles, state };
