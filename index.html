@@ -740,6 +740,43 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     return keep;
   }
 
+  const RE_PARTIAL = /([\u4e00-\u9fa5])某/g;
+  const STRONG_NEXT = new Set(("、，。；：！？诉称辩说未已向于到经提主认为系等和与及协办按被将对给由在").split(""));
+
+  /** 「姓+某(+名)」半打码的名字，仍然泄露名里的字，统一成「姓某某」 */
+  function findPartialNames(text) {
+    const out = [];
+    RE_PARTIAL.lastIndex = 0;
+    let m;
+    while ((m = RE_PARTIAL.exec(text))) {
+      const surname = m[1];
+      if (!S.SINGLE_SURNAMES.has(surname)) continue;
+      let i = m.index + 2;
+      let tail = "";
+      for (const L of [2, 1]) {
+        const cand = text.slice(i, i + L);
+        if (cand.length === L && [...cand].every((ch) => S.GIVEN_NAME_CHARS.has(ch))) {
+          tail = cand;
+          break;
+        }
+      }
+      if (!tail && text[i] === "某") continue;   // 张某某 本身完整
+      const token = m[0] + tail;
+      if (R.ORG_SUFFIXES.some((suf) => token.endsWith(suf))) continue;
+      const end = i + tail.length;
+      const nxt = text[end] || "";
+      let ok = STRONG_NEXT.has(nxt);
+      if (!ok) {
+        const left = text.slice(Math.max(0, m.index - 12), m.index);
+        ok = R.REDACT_ANCHORS.some((a) => left.endsWith(a));
+      }
+      if (!ok) continue;
+      out.push({ start: m.index, end, kind: T.PERSON, text: token,
+                 rule: "partial-mask", priority: PRIORITY.PERSON, sub: "" });
+    }
+    return out;
+  }
+
   function findPersons(text, keep) {
     const hits = new Map();
     const add = (s, e, tok, rule) => {
@@ -845,6 +882,7 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     spans.push(...findAddresses(text));
     spans.push(...findOrgs(text));
     spans.push(...findPersons(text, keep));
+    spans.push(...findPartialNames(text));
     const resolved = resolve(spans);
     // 白名单最高优先级：法条 / 法院 / 案号绝不遮挡
     const preserved = T.findPreserve(text);
@@ -877,8 +915,8 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     }
     next(kind, base) {
       if (!T.INDEXED.has(kind)) return base;
-      const n = (this.counter.get(kind) || 0) + 1;
-      this.counter.set(kind, n);
+      const n = (this.counter.get(base) || 0) + 1;
+      this.counter.set(base, n);
       return base + T.suffix(n);
     }
     assign(kind, text, context, pos, sub) {
