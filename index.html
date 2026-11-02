@@ -182,7 +182,7 @@ label.dropzone { display: block; }
     <div class="mark">脱</div>
     <h1>法律文书脱敏</h1>
     <p class="sub">当事人姓名、单位名、住址、身份证、电话换成替身 · 全部在本机浏览器内完成，文件不上传
-      <span style="color:#9aa1ad;font-size:12px">· v0.3.5 · 11-02 22:23</span></p>
+      <span style="color:#9aa1ad;font-size:12px">· v0.3.5 · 11-02 23:02</span></p>
   </header>
 
   <div class="tabs">
@@ -1943,6 +1943,105 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
+<script>window.__boot=(window.__boot||[]);window.__boot.push('desktop.js');
+/* 桌面宿主桥：WebView2 里才启用；浏览器里 available=false，一切照旧 */
+(function (root) {
+  const wv = root.chrome && root.chrome.webview;
+  if (!wv) {
+    root.LR_DESKTOP = { available: false };
+    return;
+  }
+
+  const waiters = {};
+  let onFile = null;
+
+  function wait(type, timeoutMs) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { delete waiters[type]; resolve(null); }, timeoutMs || 60000);
+      waiters[type] = (msg) => { clearTimeout(timer); resolve(msg); };
+    });
+  }
+
+  wv.addEventListener("message", (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch (err) { return; }
+    if (msg.type === "open") {
+      if (onFile) onFile(msg);
+      return;
+    }
+    const w = waiters[msg.type];
+    if (w) { delete waiters[msg.type]; w(msg); }
+  });
+
+  function toBase64(u8) {
+    let out = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < u8.length; i += CHUNK) {
+      out += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+    }
+    return btoa(out);
+  }
+
+  root.LR_DESKTOP = {
+    available: true,
+
+    /** 告诉宿主页面已就绪：宿主要是有待处理文件，会推过来 */
+    ready() { wv.postMessage(JSON.stringify({ type: "ready" })); },
+
+    /** 注册"收到文件"回调 */
+    onFile(fn) { onFile = fn; },
+
+    /** 库：写入一条记录（记录 + 产物文件都落盘） */
+    libSave(record, files) {
+      return Promise.all(files.map((f) => f.blob.arrayBuffer().then((buf) => ({
+        name: f.name, data: toBase64(new Uint8Array(buf)),
+      })))).then((payload) => {
+        const p = wait("lib-saved", 120000);
+        wv.postMessage(JSON.stringify({ type: "lib-save", record: record, files: payload }));
+        return p;
+      });
+    },
+
+    /** 库：列出全部记录 */
+    libList() {
+      const p = wait("lib-list", 60000);
+      wv.postMessage(JSON.stringify({ type: "lib-list" }));
+      return p.then((m) => (m && m.items) || []);
+    },
+
+    /** 库：取某个产物文件的字节 */
+    libFile(id, name) {
+      const p = wait("lib-file", 120000);
+      wv.postMessage(JSON.stringify({ type: "lib-file", id: id, name: name }));
+      return p;
+    },
+
+    libDelete(id) {
+      const p = wait("lib-deleted", 30000);
+      wv.postMessage(JSON.stringify({ type: "lib-delete", id: id }));
+      return p;
+    },
+
+    libCategory(id, category) {
+      const p = wait("lib-ok", 30000);
+      wv.postMessage(JSON.stringify({ type: "lib-category", id: id, category: category }));
+      return p;
+    },
+
+    /** 让宿主把文件保存到原目录（桌面版没有"下载"概念） */
+    save(name, blob) {
+      return blob.arrayBuffer().then((buf) => {
+        const p = wait("saved", 120000);
+        wv.postMessage(JSON.stringify({
+          type: "save", name: name, data: toBase64(new Uint8Array(buf)),
+        }));
+        return p;
+      });
+    },
+  };
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
 <script>window.__boot=(window.__boot||[]);window.__boot.push('app.js');
 /* 页面逻辑：拖拽 → 浏览器内脱敏 → 下载 */
 (function () {
@@ -1982,6 +2081,12 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
   }
 
   function download(name, blob) {
+    if (window.LR_DESKTOP && window.LR_DESKTOP.available) {
+      window.LR_DESKTOP.save(name, blob).then(function (r) {
+        if (r && r.path) console.log("已保存：" + r.path);
+      });
+      return;
+    }
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = name;
@@ -2361,6 +2466,21 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
   $("#lib-list").addEventListener("click", handleLibClick);
   $("#lib-list").addEventListener("change", handleLibClick);
   updateLibCount();
+
+  // 桌面版：接管宿主推过来的文件
+  if (window.LR_DESKTOP && window.LR_DESKTOP.available) {
+    window.LR_DESKTOP.onFile(function (msg) {
+      try {
+        const bin = atob(msg.data);
+        const u8 = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+        addFiles([new File([u8], msg.name)]);
+      } catch (e) {
+        console.warn("桌面文件接收失败", e);
+      }
+    });
+    window.LR_DESKTOP.ready();
+  }
   $("#clear").addEventListener("click", () => {
     state.results = [];
     list.innerHTML = "";
@@ -2378,11 +2498,55 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     return n;
   }
 
+  function isDesktop() {
+    return !!(window.LR_DESKTOP && window.LR_DESKTOP.available);
+  }
+
+  function b64ToBlob(b64, type) {
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return new Blob([u8], { type: type || "application/octet-stream" });
+  }
+
+  /** 统一存储：桌面版落盘（文档\法律脱敏库），网页版用 IndexedDB */
+  const Store = {
+    async list() {
+      if (isDesktop()) return await window.LR_DESKTOP.libList();
+      const rows = await window.LR_STORE.all();
+      return rows.map((r) => Object.assign({}, r, {
+        files: (r.files || []).map((f) => f.name),
+      }));
+    },
+    async add(record, files) {
+      if (isDesktop()) return await window.LR_DESKTOP.libSave(record, files);
+      return await window.LR_STORE.add(Object.assign({}, record, { files: files }));
+    },
+    async remove(id) {
+      if (isDesktop()) return await window.LR_DESKTOP.libDelete(id);
+      return await window.LR_STORE.remove(Number(id));
+    },
+    async category(id, cat) {
+      if (isDesktop()) return await window.LR_DESKTOP.libCategory(id, cat);
+      return await window.LR_STORE.patch(Number(id), { category: cat });
+    },
+    async file(rec, name) {
+      if (isDesktop()) {
+        const r = await window.LR_DESKTOP.libFile(rec.id, name);
+        return b64ToBlob(r.data);
+      }
+      const all = await window.LR_STORE.all();
+      const full = all.find((x) => String(x.id) === String(rec.id));
+      const f = full && full.files.find((y) => y.name === name);
+      return f ? f.blob : null;
+    },
+  };
+
   async function saveRecord(res) {
     try {
       const files = [];
       for (const f of res.outFiles) files.push({ name: f.name, blob: f.blob });
-      await window.LR_STORE.add({
+      await Store.add({
         seq: nextSeq(),
         name: res.file.name,
         ext: res.ext,
@@ -2390,8 +2554,7 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
         count: res.redactor.rows.length,
         category: "未分类",
         createdAt: Date.now(),
-        files,
-      });
+      }, files);
       updateLibCount();
     } catch (e) {
       console.warn("记录保存失败", e);
@@ -2417,7 +2580,7 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     const kw = ($("#lib-search").value || "").trim().toLowerCase();
     const cat = $("#lib-cat").value;
     let all = [];
-    try { all = await window.LR_STORE.all(); } catch (e) { all = []; }
+    try { all = await Store.list(); } catch (e) { all = []; }
 
     // 分类下拉
     const sel = $("#lib-cat");
@@ -2451,15 +2614,16 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
 
   async function downloadAllRecords() {
     let all = [];
-    try { all = await window.LR_STORE.all(); } catch (e) { return; }
+    try { all = await Store.list(); } catch (e) { return; }
     if (!all.length) { alert("文件夹是空的"); return; }
     const entries = [];
     const seen = new Set();
     const uniq = (n) => { let x = n, i = 2; while (seen.has(x)) { x = n.replace(/(\.[^.]+)$/, `-${i}$1`); i++; } seen.add(x); return x; };
     for (const r of all) {
       const dir = `#${r.seq}_${r.category || "未分类"}/`;
-      for (const f of r.files) {
-        entries.push([uniq(dir + f.name), new Uint8Array(await f.blob.arrayBuffer())]);
+      for (const fname of r.files) {
+        const blob = await Store.file(r, fname);
+        if (blob) entries.push([uniq(dir + fname), new Uint8Array(await blob.arrayBuffer())]);
       }
     }
     const bytes = await window.LR_ZIP.writeZip(entries);
@@ -2470,24 +2634,27 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     const btn = e.target.closest("[data-act]");
     const row = e.target.closest(".rec");
     if (!row) return;
-    const id = Number(row.dataset.id);
+    const id = row.dataset.id;   // 桌面版是字符串 id，不能转数字
     const act = (btn && btn.dataset.act) || (e.target.tagName === "SELECT" ? "cat" : null);
 
     if (act === "cat") {
-      await window.LR_STORE.patch(id, { category: row.querySelector("select").value });
+      await Store.category(id, row.querySelector("select").value);
       return;
     }
     if (act === "del") {
       if (!confirm("从文件夹删除这条记录？（不会动原文件）")) return;
-      await window.LR_STORE.remove(id);
+      await Store.remove(id);
       renderLibrary(); updateLibCount();
       return;
     }
     if (act === "dl") {
-      const all = await window.LR_STORE.all();
-      const rec = all.find((r) => r.id === id);
+      const all = await Store.list();
+      const rec = all.find((r) => String(r.id) === String(id));
       if (!rec) return;
-      for (const f of rec.files) download(f.name, f.blob);
+      for (const fname of rec.files) {
+        const blob = await Store.file(rec, fname);
+        if (blob) download(fname, blob);
+      }
     }
   }
 
