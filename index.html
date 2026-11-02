@@ -311,8 +311,52 @@ setTimeout(function () {
   if (/MicroMessenger|QQ\//i.test(ua)) {
     show("检测到你在微信/QQ 里打开。请点右上角「…」→「在浏览器中打开」，或复制链接到 Chrome/Edge 里打开。");
   }
+  // ?diag=1 诊断页：纯 ES5，任何浏览器都能跑
+  if (/[?&]diag/.test(location.search)) {
+    var diagMode = true;
+    window.__diag = true;
+    document.addEventListener("DOMContentLoaded", function () {
+      var rows = [];
+      function has(name, fn) {
+        var ok = false;
+        try { ok = !!fn(); } catch (e) { ok = false; }
+        rows.push((ok ? "✓ " : "✗ ") + name);
+      }
+      rows.push("地址：" + location.href);
+      rows.push("UA字符串：" + navigator.userAgent);
+      var m = /(Chrome|Edg|Firefox|Version|Safari)\/([\d.]+)/.exec(navigator.userAgent);
+      rows.push("识别：" + (m ? m[1] + " " + m[2] : "未知"));
+      rows.push("屏幕：" + screen.width + "x" + screen.height + " | 像素比：" + (window.devicePixelRatio || 1));
+      rows.push("—— 能力检测 ——");
+      has("DecompressionStream（解压 docx/PDF 需要）", function () { return window.DecompressionStream; });
+      has("CompressionStream", function () { return window.CompressionStream; });
+      has("Promise", function () { return window.Promise; });
+      has("Symbol", function () { return window.Symbol; });
+      has("Object.entries", function () { return Object.entries; });
+      has("Array.from", function () { return Array.from; });
+      has("String.padStart", function () { return "".padStart; });
+      has("Array.includes", function () { return [].includes; });
+      has("Element.closest", function () { return Element.prototype.closest; });
+      has("canvas.toBlob", function () { return HTMLCanvasElement.prototype.toBlob; });
+      has("URL.createObjectURL", function () { return URL.createObjectURL; });
+      has("IndexedDB（案例库需要）", function () { return window.indexedDB; });
+      has("Blob", function () { return window.Blob; });
+      has("pdf.js 已加载", function () { return window.pdfjsLib; });
+      has("主程序已就绪", function () { return window.LR_APP && window.LR_APP.ready; });
+
+      var box = document.createElement("pre");
+      box.style.cssText = "position:fixed;inset:0;z-index:99999;margin:0;padding:20px;background:#fff;" +
+        "color:#111;font:13px/1.7 Menlo,Consolas,monospace;white-space:pre-wrap;overflow:auto";
+      var NL = String.fromCharCode(10);
+      box.textContent = ["法律文书脱敏 · 兼容性诊断", ""].concat(rows)
+        .concat(["", "把这个截图发我即可。"]).join(NL);
+      document.body.appendChild(box);
+    });
+  }
+
   // 启动看门狗：3 秒还没就绪，把浏览器信息亮出来（方便截图排查）
   setTimeout(function () {
+    if (window.__diag) return;
     if (window.LR_APP && window.LR_APP.ready) return;
     show("页面初始化未完成。浏览器：" + ua.slice(0, 120));
   }, 3000);
