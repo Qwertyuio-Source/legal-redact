@@ -305,6 +305,17 @@ setTimeout(function () {
     if (d && msg) d.textContent = msg;
   }
   window.__lrFail = show;
+
+  // 微信/QQ 内置浏览器：提示用系统浏览器打开
+  var ua = navigator.userAgent || "";
+  if (/MicroMessenger|QQ\//i.test(ua)) {
+    show("检测到你在微信/QQ 里打开。请点右上角「…」→「在浏览器中打开」，或复制链接到 Chrome/Edge 里打开。");
+  }
+  // 启动看门狗：3 秒还没就绪，把浏览器信息亮出来（方便截图排查）
+  setTimeout(function () {
+    if (window.LR_APP && window.LR_APP.ready) return;
+    show("页面初始化未完成。浏览器：" + ua.slice(0, 120));
+  }, 3000);
   window.addEventListener("error", function (e) {
     var msg = (e && e.message) ? e.message : "脚本出错";
     var src = e && e.filename ? ("（" + String(e.filename).split("/").pop() + "）") : "";
