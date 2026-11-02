@@ -163,13 +163,20 @@ mark.ins { background: var(--ok-soft); color: #0a6b4c; border-radius: 3px; paddi
 </style>
 </head>
 <body>
+<div id="bootwarn" style="display:none;margin:0;padding:14px 18px;background:#fdecea;color:#8a1c14;font-size:14px;line-height:1.8;border-bottom:1px solid #f5c2c0">
+  <b id="bootwarn-title">页面没能启动</b><br>
+  <span id="bootwarn-detail">请按 Ctrl+F5 强制刷新；仍不行的话，把这段提示截图发我。</span>
+  <div style="margin-top:8px;font-size:12.5px;color:#b4554a">
+    需要 Chrome / Edge 103+ 或 Safari 16.4+；360 / QQ 浏览器请切「极速模式」。
+  </div>
+</div>
 <div class="wrap">
 
   <header>
     <div class="mark">脱</div>
     <h1>法律文书脱敏</h1>
     <p class="sub">当事人姓名、单位名、住址、身份证、电话换成替身 · 全部在本机浏览器内完成，文件不上传
-      <span style="color:#9aa1ad;font-size:12px">· v0.3 · 10-31 21:11</span></p>
+      <span style="color:#9aa1ad;font-size:12px">· v0.3.1 · 11-02 12:40</span></p>
   </header>
 
   <div class="tabs">
@@ -272,12 +279,7 @@ mark.ins { background: var(--ok-soft); color: #0a6b4c; border-radius: 3px; paddi
   </details>
 
 </div>
-<div id="bootwarn" style="display:none;margin:20px 0;padding:16px 18px;border:1px solid #f5c2c0;background:#fdecea;color:#8a1c14;border-radius:12px;font-size:14px;line-height:1.8">
-  <b>页面没能启动。</b><br>
-  最常见原因：浏览器太旧或用了「兼容模式」。本页需要 <b>Chrome / Edge 103+</b> 或 <b>Safari 16.4+</b>。<br>
-  如果用 360 / QQ / 搜狗浏览器，请点地址栏右侧的「<b>闪电 / 极速模式</b>」图标切过去，
-  或者直接双击同目录的 <code>打开网页.bat</code>，它会用 Chrome/Edge 打开。
-</div>
+
 
 <script>
 /* 启动看门狗：主程序没跑起来就把原因说出来，别让页面白屏 */
@@ -290,6 +292,31 @@ setTimeout(function () {
   }
 }, 1500);
 </script>
+<script>
+/* 早期错误捕获：任何脚本出错都在顶部显示出来，不再静默 */
+(function () {
+  function show(msg) {
+    var box = document.getElementById("bootwarn");
+    if (!box) return;
+    box.style.display = "block";
+    var t = document.getElementById("bootwarn-title");
+    var d = document.getElementById("bootwarn-detail");
+    if (t && msg && msg.indexOf("browser") >= 0) t.textContent = "浏览器版本太旧";
+    if (d && msg) d.textContent = msg;
+  }
+  window.__lrFail = show;
+  window.addEventListener("error", function (e) {
+    var msg = (e && e.message) ? e.message : "脚本出错";
+    var src = e && e.filename ? ("（" + String(e.filename).split("/").pop() + "）") : "";
+    show(msg + src);
+  }, true);
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e && e.reason;
+    show("异步错误：" + (r && r.message ? r.message : String(r)));
+  });
+})();
+</script>
+
 <script>
 /**
  * @licstart The following is the entire license notice for the
@@ -1815,6 +1842,9 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
 
 /* 页面逻辑：拖拽 → 浏览器内脱敏 → 下载 */
 (function () {
+  // 先占位：初始化万一失败，也不要让看门狗把界面藏起来
+  window.LR_APP = window.LR_APP || { ready: false };
+
   const D = window.LR_DOCX;
   const KIND_CN = window.LR_TYPES.CN;
   const TYPES = ["person", "org", "address", "id", "phone", "email"];
@@ -2392,7 +2422,7 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
   }
 
   // 便于自动化测试
-  window.LR_APP = { addFiles, state };
+  window.LR_APP = { addFiles, state, ready: true };
 })();
 
 </script>
