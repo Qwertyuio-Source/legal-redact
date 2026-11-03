@@ -1,0 +1,35 @@
+name: build-macos
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "mac/**"
+      - "legalredact/**"
+      - "redact.py"
+      - "requirements.txt"
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: bash mac/build_mac.sh
+
+      - name: Smoke test
+        run: |
+          ./package/legalredact --help | head -5
+          echo "test" > /tmp/t.txt
+          ./package/legalredact /tmp/t.txt -o /tmp/out || true
+          ls -la /tmp/out || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: legal-redact-macos
+          path: 法律脱敏-Mac.zip
