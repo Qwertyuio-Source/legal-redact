@@ -19,6 +19,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Normalize line endings
+        run: |
+          sed -i '' 's/\r$//' mac/build_mac.sh mac/安装.command mac/拖拽脱敏.applescript || true
+          file mac/build_mac.sh
+
       - name: Build
         run: bash mac/build_mac.sh
 
