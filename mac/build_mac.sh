@@ -24,5 +24,17 @@ osacompile -o "package/法律脱敏.app" "mac/拖拽脱敏.applescript"
 
 echo "== 压缩 =="
 rm -f "法律脱敏-Mac.zip"
-(cd package && zip -qry "$ROOT/法律脱敏-Mac.zip" .)
+# 用 python 打包，确保中文文件名带 UTF-8 标记（Windows/Mac 解压都不乱码）
+python3 - "$ROOT" <<'PY'
+import os, sys, zipfile
+root = os.path.join(sys.argv[1], "package")
+out = os.path.join(sys.argv[1], "法律脱敏-Mac.zip")
+if os.path.exists(out): os.remove(out)
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for base, _dirs, files in os.walk(root):
+        for f in files:
+            p = os.path.join(base, f)
+            z.write(p, os.path.relpath(p, root))
+print("zipped:", out)
+PY
 ls -lh "法律脱敏-Mac.zip"
