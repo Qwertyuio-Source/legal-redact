@@ -20,7 +20,7 @@ from legalredact import types as T
 from legalredact.engine import Redactor
 from legalredact.pdfio import process_pdf
 
-SUPPORTED = {".docx", ".txt", ".md", ".markdown", ".pdf",
+SUPPORTED = {".docx", ".xlsx", ".txt", ".md", ".markdown", ".pdf",
              ".html", ".htm", ".png", ".jpg", ".jpeg"}
 KIND_CN = T.TYPE_CN
 
@@ -52,6 +52,26 @@ def apply_to_text(text: str, spans) -> str:
     for start, end, rep in sorted(((s[0], s[1], s[2]) for s in spans), key=lambda s: -s[0]):
         text = text[:start] + rep + text[end:]
     return text
+
+
+def process_xlsx(path: Path, out_dir: Path, cfg: dict, name: str) -> dict:
+    """Excel：只改单元格文本，其余 XML 一个字节不动（图片/图表/样式都在）。"""
+    from legalredact.xlsxraw import redact_xlsx_auto
+
+    redactor = new_redactor(cfg)
+    out_path = out_dir / f"{name}.脱敏.xlsx"
+    res = redact_xlsx_auto(str(path), str(out_path), redactor)
+
+    changed = len({(c[0], c[1], c[2]) for c in res.get("cells", [])})
+    preview_lines = ["原文  →  脱敏后", "=" * 60]
+    for sheet, row, col, before, after in res.get("cells", [])[:200]:
+        if before == after:
+            continue
+        preview_lines.append(f"[{sheet}!R{row}C{col}] {before[:120]}")
+        preview_lines.append(f"  → {after[:120]}")
+    (out_dir / f"{name}.对照.txt").write_text("\n".join(preview_lines), encoding="utf-8")
+
+    return _finish(path, out_dir, redactor, out_path, changed, name)
 
 
 def process_docx(path: Path, out_dir: Path, cfg: dict, name: str) -> dict:
@@ -144,16 +164,26 @@ def _blackout_image(src: Path, dst: Path, br) -> Path | None:
 def process_generic(path: Path, out_dir: Path, cfg: dict, name: str) -> dict:
     from legalredact.extract import extract_documents
 
-    pages = extract_documents(path)
-    texts = [p["text"] for p in pages]
+    is_image = path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+    items = None
+    if is_image:
+        # 图片：OCR 一次，文字和框共用，省掉重复识别
+        from legalredact.imgio import read_image
+        items = read_image(path)
+        texts = ["\n".join(it["text"] for it in items)]
+    else:
+        pages = extract_documents(path)
+        texts = [p["text"] for p in pages]
+
     redactor = new_redactor(cfg)
     results = redactor.prepare(texts)
 
     out_path = out_dir / f"{name}.脱敏.txt"
     out_path.write_text("\n\n".join(br.redacted for br in results), encoding="utf-8")
 
-    if path.suffix.lower() in {".png", ".jpg", ".jpeg"} and results:
-        _blackout_image(path, out_dir / f"{name}.涂抹版{path.suffix}", results[0])
+    if is_image and results:
+        from legalredact.imgio import blackout_prepared
+        blackout_prepared(path, out_dir / f"{name}.涂抹版{path.suffix}", items, results[0])
 
     lines = ["原文  →  脱敏后", "=" * 50]
     for br in results:
@@ -248,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
         used_names.add(name)
         if suffix == ".docx":
             res = process_docx(f, out_dir, cfg, name)
+        elif suffix == ".xlsx":
+            res = process_xlsx(f, out_dir, cfg, name)
         elif suffix == ".pdf":
             res = process_pdf(f, out_dir, new_redactor(cfg), name)
             mapping_path = out_dir / f"{name}.映射表.json"
