@@ -182,7 +182,7 @@ label.dropzone { display: block; }
     <div class="mark">脱</div>
     <h1>法律文书脱敏</h1>
     <p class="sub">当事人姓名、单位名、住址、身份证、电话换成替身 · 全部在本机浏览器内完成，文件不上传
-      <span style="color:#9aa1ad;font-size:12px">· v0.3.5 · 11-11 23:41</span></p>
+      <span style="color:#9aa1ad;font-size:12px">· v0.3.5 · 11-12 12:26</span></p>
   </header>
 
   <div class="tabs">
@@ -202,6 +202,8 @@ label.dropzone { display: block; }
   <input type="file" id="file" class="file-input" multiple accept=".docx,.txt,.md,.html,.pdf,.png,.jpg,.jpeg,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*">
 
   <div class="toolbar" style="margin-top:14px">
+    <button class="btn" id="folder-open">选文件夹</button>
+    <input type="file" id="folder-input" class="file-input" webkitdirectory multiple>
     <button class="btn" id="paste-open">粘贴文字</button>
     <span style="font-size:12.5px;color:var(--muted)">从 PDF/图片转换出来的文字，可以直接粘在这里</span>
   </div>
@@ -779,6 +781,43 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     return body.length >= 2;
   }
 
+  const RE_PAREN_CITY = /[\u4e00-\u9fa5]{2,8}[（(][\u4e00-\u9fa5]{2,4}[）)][\u4e00-\u9fa5]{2,10}/g;
+  const ORG_TAIL_STOP = new Set("为所的进行由与和及在是，。、；：！？\n".split(""));
+  const ORG_LEAD = new Set("由与和及在是对向给被让使据经项其该".split(""));
+  const ORG_TAIL_VERB = new Set("迟未已将正均都也仍却则并且后前中内上下还又再才就".split(""));
+
+  /** 「XX（北京）YY」这种不以「公司」结尾的单位名，括号+地名是很强的信号 */
+  function findParenOrgs(text, taken) {
+    const out = [];
+    RE_PAREN_CITY.lastIndex = 0;
+    let m;
+    while ((m = RE_PAREN_CITY.exec(text))) {
+      let tok = m[0];
+      const cp = Math.max(tok.indexOf("）"), tok.indexOf(")"));
+      if (cp < 0) continue;
+      let cut = tok.length;
+      for (let i = cp + 1; i < tok.length; i++) {
+        if (ORG_TAIL_STOP.has(tok[i]) || ORG_TAIL_VERB.has(tok[i])) { cut = i; break; }
+      }
+      cut = Math.min(cut, cp + 1 + 8);
+      tok = tok.slice(0, cut);
+      let nLead = 0;
+      while (tok.length && ORG_LEAD.has(tok[0])) { tok = tok.slice(1); nLead++; }
+      const cp2 = Math.max(tok.indexOf("）"), tok.indexOf(")"));
+      if (cp2 < 0) continue;
+      const tail = tok.length - cp2 - 1;
+      if (tail < 2 || tail > 10) continue;
+      if (R.ORG_SUFFIXES.some((suf) => tok.endsWith(suf))) continue;
+      if (T.PRESERVE.some(([, rx]) => rx.test(tok))) continue;
+      const start = m.index + nLead;
+      const end = start + tok.length;
+      if (taken && taken.some((t) => start < t.end && t.start < end)) continue;
+      out.push({ start, end, kind: T.ORG, text: tok,
+                 rule: "paren-city", priority: PRIORITY.ORG, sub: "" });
+    }
+    return out;
+  }
+
   function findOrgs(text) {
     const spans = [];
     const seen = new Set();
@@ -998,7 +1037,9 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     const spans = [];
     spans.push(...X.findStructured(text));
     spans.push(...findAddresses(text));
-    spans.push(...findOrgs(text));
+    const orgSpans = findOrgs(text);
+    spans.push(...orgSpans);
+    spans.push(...findParenOrgs(text, orgSpans));
     spans.push(...findPersons(text, keep));
     spans.push(...findPartialNames(text));
     const resolved = resolve(spans);
@@ -2121,6 +2162,35 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     return null;
   }
 
+  /** 孤儿共享串（没有任何格子引用）里也可能留着原文，清一遍：先用已认定的替身，
+      再让引擎认独立 PII，最后按整格启发兜一次。返回 Map<序号, 新文字>。 */
+  function scrubOrphans(redactor, shared, usedShared) {
+    const updates = new Map();
+    const known = [...redactor.renderer.byKey.values()]
+      .sort((a, b) => b.original.length - a.original.length);
+    shared.forEach((text, idx) => {
+      if (usedShared.has(idx) || !text || !text.trim()) return;
+      let now = text;
+      for (const rec of known) {
+        if (now.includes(rec.original)) now = now.split(rec.original).join(rec.replacement);
+      }
+      const spans = D.detect(now).sort((a, b) => b.start - a.start);
+      for (const sp of spans) {
+        if (redactor.disabled.has(sp.kind)) continue;
+        const rec = redactor.renderer.assign(sp.kind, sp.text, now, sp.start, sp.sub);
+        now = now.slice(0, sp.start) + rec.replacement + now.slice(sp.end);
+      }
+      const guess = cellGuess(now);
+      if (guess && !redactor.disabled.has(guess.kind)) {
+        const start = now.length - now.trimStart().length;
+        const rec = redactor.renderer.assign(guess.kind, guess.body, now, start);
+        now = now.slice(0, start) + rec.replacement + now.slice(start + guess.body.length);
+      }
+      if (now !== text) updates.set(idx, now);
+    });
+    return updates;
+  }
+
   /** 先走引擎 prepare，再给引擎没认出来的「整格值」补一刀（补的实体同样走 renderer） */
   function redactCells(redactor, texts) {
     const results = redactor.prepare(texts);
@@ -2302,15 +2372,8 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     }
 
     // 没被任何单元格引用的共享串也可能留着敏感原文，顺手清掉（防漏）
-    const orphan = [];
-    pkg.shared.forEach((text, i) => {
-      if (!usedShared.has(i) && typeof text === "string" && text.trim()) orphan.push(i);
-    });
-    if (orphan.length) {
-      const brs = redactor.prepare(orphan.map((i) => pkg.shared[i]));
-      orphan.forEach((idx, k) => {
-        if (brs[k] && brs[k].spans.length) sharedUpdates.set(idx, brs[k].redacted);
-      });
+    for (const [idx, text] of scrubOrphans(redactor, pkg.shared, usedShared)) {
+      sharedUpdates.set(idx, text);
     }
 
     if (sharedUpdates.size && pkg.sharedPath && files.has(pkg.sharedPath)) {
@@ -3164,15 +3227,19 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
       if (!this.available()) return { ok: false, hits: [], reason: "浏览器不支持网页内 OCR" };
 
       const mime = opts.mime || "image/png";
-      let ocr;
-      try {
-        ocr = await root.LR_OCR.recognize(input);
-      } catch (e) {
-        return { ok: false, hits: [], reason: "OCR 失败：" + (e && e.message ? e.message : e) };
+      // 同一种排版，不同 psm 差别极大（截图类 psm 11 准，文档类 psm 3/6 准）：
+      // 两种都跑，取中文识别更多的那份
+      let ocr = null, bestScore = -1, lastReason = "";
+      for (const psm of [11, 6]) {
+        let r;
+        try { r = await root.LR_OCR.recognize(input, { psm: psm }); }
+        catch (e) { lastReason = e && e.message ? e.message : String(e); continue; }
+        if (!r || r.ok === false) { lastReason = (r && r.reason) || "未知"; continue; }
+        const score = String(r.text || "").replace(/[^\u4e00-\u9fa5]/g, "").length;
+        if (score > bestScore) { bestScore = score; ocr = r; }
+        if (bestScore > 20) break;   // 已经认得够多，不用再跑
       }
-      if (!ocr || ocr.ok === false) {
-        return { ok: false, hits: [], reason: "OCR 失败：" + ((ocr && ocr.reason) || "未知") };
-      }
+      if (!ocr) return { ok: false, hits: [], reason: "OCR 失败：" + (lastReason || "未知") };
 
       const lines = (ocr.lines || []).map((l) => ({
         text: cleanText(l.text),
@@ -3194,11 +3261,14 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
       }
 
       const img = await loadImage(input, mime);
+      // 画布限宽：微信原图 3000+ 宽，Safari 画布有面积上限，超了 toBlob 会返回 null
+      const MAX_W = 2400;
+      const outScale = Math.min(1, MAX_W / img.naturalWidth);
       const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
+      canvas.width = Math.round(img.naturalWidth * outScale);
+      canvas.height = Math.round(img.naturalHeight * outScale);
       const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
       // OCR 坐标基于预处理图，按 scale 还原到原图
       const sx = (ocr.image && ocr.image.scaleX) || 1;
@@ -3216,10 +3286,10 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
           if (i1 <= i0) continue;
 
           const [x0, x1] = sliceX(line.text, line.box, i0, i1);
-          const bx0 = Math.max(0, x0 / sx - PAD_X);
-          const bx1 = Math.min(canvas.width, x1 / sx + PAD_X);
-          const by0 = Math.max(0, line.box.y0 / sy - PAD_Y);
-          const by1 = Math.min(canvas.height, line.box.y1 / sy + PAD_Y);
+          const bx0 = Math.max(0, (x0 / sx) * outScale - PAD_X);
+          const bx1 = Math.min(canvas.width, (x1 / sx) * outScale + PAD_X);
+          const by0 = Math.max(0, (line.box.y0 / sy) * outScale - PAD_Y);
+          const by1 = Math.min(canvas.height, (line.box.y1 / sy) * outScale + PAD_Y);
           if (bx1 <= bx0 || by1 <= by0) continue;
 
           ctx.fillStyle = "#000";
@@ -3228,8 +3298,18 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
         }
       }
 
-      const blob = await toBlob(canvas, mime === "image/jpeg" ? "image/jpeg" : "image/png");
-      const bytes = blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+      let blob = await toBlob(canvas, mime === "image/jpeg" ? "image/jpeg" : "image/png");
+      let bytes = blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+      if (!bytes) {
+        // 兜底：有些浏览器 toBlob 会失败，用 dataURL 转
+        try {
+          const dataUrl = canvas.toDataURL(mime === "image/jpeg" ? "image/jpeg" : "image/png");
+          const b64 = dataUrl.split(",")[1] || "";
+          const bin = atob(b64);
+          bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        } catch (e) { bytes = null; }
+      }
       return { ok: true, bytes, hits, text: br.redacted, reason: hits.length ? "" : "没有识别到敏感信息" };
     },
   };
@@ -3363,9 +3443,11 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
       const mime = ext === "png" ? "image/png" : "image/jpeg";
       const out = await window.LR_IMG.redact(buf, redactor, { mime });
       if (!out.ok) throw new Error(out.reason || "图片处理失败");
-      const outFiles = [];
-      if (out.bytes) outFiles.push({ name: `${name}.脱敏.${ext}`, blob: new Blob([out.bytes], { type: mime }) });
-      outFiles.push({ name: `${name}.脱敏.txt`, blob: textBlob(out.text || "") });
+      if (!out.bytes) throw new Error("这张图没能生成涂黑版（浏览器画布限制），请换用桌面版处理");
+      const outFiles = [
+        { name: `${name}.脱敏.${ext}`, blob: new Blob([out.bytes], { type: mime }) },
+        { name: `${name}.脱敏.txt`, blob: textBlob(out.text || "") },
+      ];
       return { file, name, ext, redactor, redactedTexts: [out.text || ""], outFiles };
     }
 
@@ -3568,9 +3650,7 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
 
   async function addFiles(fileList) {
     const all = [...fileList];
-    const images = all.filter((f) => /\.(png|jpg|jpeg)$/i.test(f.name));
     const files = all.filter((f) => /\.(docx|xlsx|txt|md|html|pdf|png|jpg|jpeg)$/i.test(f.name));
-    if (images.length) showPdfGuide(images.map((f) => f.name), "图片");
     if (!files.length) {
       if (!images.length) alert("支持 .docx / .txt / .md / .html / .pdf；图片请先用 图片PDF转文字.bat 转成文字。");
       return;
@@ -3662,6 +3742,29 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     const res = state.results[Number(card.dataset.idx)];
     if (res) handleDownload(res, btn.dataset.act);
   });
+
+  (function () {
+    const btn = $("#folder-open");
+    const inp = $("#folder-input");
+    if (!btn || !inp) return;
+    btn.addEventListener("click", function () { inp.click(); });
+    inp.addEventListener("change", function (e) {
+      const all = [...e.target.files];
+      e.target.value = "";
+      const ok = all.filter((f) => /\.(docx|xlsx|txt|md|html|pdf|png|jpg|jpeg)$/i.test(f.name));
+      if (!ok.length) { alert("这个文件夹里没有可处理的文件（支持 docx/xlsx/pdf/txt/md/html/图片）"); return; }
+      // 重名的用「上级目录_文件名」区分，避免输出互相覆盖
+      const count = new Map();
+      ok.forEach((f) => count.set(f.name, (count.get(f.name) || 0) + 1));
+      const files = ok.map((f) => {
+        if (count.get(f.name) < 2) return f;
+        const rel = f.webkitRelativePath || "";
+        const dir = rel.split("/").slice(-2, -1)[0] || "子目录";
+        return new File([f], dir + "_" + f.name, { type: f.type });
+      });
+      addFiles(files);
+    });
+  })();
 
   $("#paste-open").addEventListener("click", () => {
     const panel = $("#paste-panel");
