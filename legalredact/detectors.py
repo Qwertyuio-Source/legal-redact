@@ -299,7 +299,7 @@ def find_enumerated_names(text: str, keep: set[str] | None = None) -> list[Span]
 RE_STANDALONE_ADDR = re.compile(
     r"^(?:[\u4e00-\u9fa5]{2,10}(?:省|自治区|特别行政区)?)[\u4e00-\u9fa5\d]{2,10}"
     r"(?:市|自治州|地区)[\u4e00-\u9fa5\d]{2,12}(?:区|县|市)?[\u4e00-\u9fa5\d]{0,20}"
-    r"(?:路|街|巷|道|村|镇|号)[\u4e00-\u9fa5\d\-]{0,20}$")
+    r"(?:路|街|巷|道|村|镇|号)[\u4e00-\u9fa5\dA-Za-z\-—–－]{0,20}$")
 
 
 def find_standalone(text: str) -> list[Span]:
@@ -312,7 +312,13 @@ def find_standalone(text: str) -> list[Span]:
         tok = line.strip()
         if not tok or len(tok) < 6:
             continue
-        offset = line_start + line.find(tok)
+        # 「地    址：xxx」这种标签先剥掉
+        stripped = re.sub(r"^[地住]\s*址\s*[：:]\s*", "", tok)
+        if stripped != tok:
+            offset = line_start + line.find(stripped)
+            tok = stripped
+        else:
+            offset = line_start + line.find(tok)
         if 8 <= len(tok) <= 60 and RE_STANDALONE_ADDR.match(tok):
             # 至少命中 3 个地址特征，避免把项目名当地址
             hits = sum(1 for k in ("省", "市", "区", "县", "路", "街", "号", "镇", "村") if k in tok)
