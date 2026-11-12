@@ -268,6 +268,33 @@ def find_table_names(text: str) -> list[Span]:
     return spans
 
 
+RE_NAME_LIST = re.compile(r"[\u4e00-\u9fa5]{2,3}(?:、[\u4e00-\u9fa5]{2,3}){1,}")
+
+
+def find_enumerated_names(text: str, keep: set[str] | None = None) -> list[Span]:
+    """顿号并列的人名：「王伟、李娜、赵强」。逐个校验，避免把「北京、上海」当人名。"""
+    spans: list[Span] = []
+    for m in RE_NAME_LIST.finditer(text):
+        pos = m.start()
+        for raw in m.group(0).split("、"):
+            picked = None
+            for L in (len(raw), 2):
+                if L < 2 or L > len(raw):
+                    continue
+                t = raw[:L]
+                if t in (keep or set()):
+                    break
+                if is_valid_name(t) and plausible_name(t):
+                    picked = t
+                    break
+            if picked:
+                # 前缀回退时，位置按 raw 在整句里的起点算
+                spans.append(Span(pos, pos + len(picked), T.PERSON, picked,
+                                  "name-list", PRIORITY["PERSON"]))
+            pos += len(raw) + 1
+    return spans
+
+
 def find_org_shorts(text: str, org_spans: list[Span]) -> list[Span]:
     """简称：全称是「卓燃时尚（北京）文化传媒」，文中又出现「卓燃团队」「卓燃文化」。"""
     cores = set()
@@ -456,6 +483,8 @@ def find_persons(text: str, keep: set[str]) -> list[Span]:
             tok = m.group(key)
             for L in (3, 2):
                 t = tok[:L]
+                if t in (keep or set()):
+                    break
                 if is_valid_name(t) and plausible_name(t):
                     picked.append((m.start(key), m.start(key) + L, t))
                     break
@@ -524,6 +553,7 @@ def detect(text: str, keep_names: set[str] | None = None) -> list[Span]:
     spans += find_paren_orgs(text, org_spans)
     spans += find_org_shorts(text, org_spans + [x for x in spans if x.kind == T.ORG])
     spans += find_table_names(text)
+    spans += find_enumerated_names(text, keep)
     spans += find_persons(text, keep)
     spans += find_partial_names(text)
     spans = resolve(spans)
