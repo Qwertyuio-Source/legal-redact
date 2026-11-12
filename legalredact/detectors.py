@@ -172,6 +172,103 @@ def _org_ok(cand: str, suffix: str, text: str, end: int) -> bool:
     return True
 
 
+RE_PAREN_CITY = re.compile(
+    r"[\u4e00-\u9fa5]{2,8}[（(][\u4e00-\u9fa5]{2,4}[）)][\u4e00-\u9fa5]{2,10}")
+# 括号后面遇到这些字就截断（"…文化传媒为主体进行落地" → "…文化传媒"）
+_ORG_TAIL_STOP = set("为所的进行由与和及在是，。、；：！？\n")
+_ORG_TAIL_VERB = set("迟未已将正均都也仍却则并且后前中内上下还又再才就")
+
+
+def find_paren_orgs(text: str, taken: list[Span] | None = None) -> list[Span]:
+    """「XX（北京）YY」这类公司写法：括号里是地名，后面跟 2~10 个字的字号。
+
+    这类名字常常不以「公司」结尾（如「卓燃时尚（北京）文化传媒」），
+    后缀规则抓不到，但括号+地名是很强的信号。
+    """
+    spans: list[Span] = []
+    for m in RE_PAREN_CITY.finditer(text):
+        tok = m.group(0)
+        cp = max(tok.find("）"), tok.find(")"))
+        if cp < 0:
+            continue
+        cut = len(tok)
+        for i in range(cp + 1, len(tok)):
+            if tok[i] in _ORG_TAIL_STOP or tok[i] in _ORG_TAIL_VERB:
+                cut = i
+                break
+        cut = min(cut, cp + 1 + 8)   # 括号后最多 8 个字
+        tok = tok[:cut]
+        # 去掉开头的介词/连词（「由卓燃…」→「卓燃…」）
+        lead = set("由与和及在是对向给被让使据经项其该")
+        n_lead = 0
+        while tok and tok[0] in lead:
+            tok = tok[1:]
+            n_lead += 1
+            cp -= 1
+        if cp < 0:
+            continue
+        tail = len(tok) - cp - 1
+        if tail < 2 or tail > 10:
+            continue
+        if any(tok.endswith(suf) for suf in data.ORG_SUFFIXES):
+            continue          # 交给后缀规则，避免重复
+        if any(rx.search(tok) for _name, rx in T.PRESERVE_RULES):
+            continue          # 法院/检察院/案号之类不脱
+        start = m.start() + n_lead
+        end = start + len(tok)
+        # 已经和后缀规则认出的是同一家，就不要再重复标
+        if taken and any(start < t.end and t.start < end for t in taken):
+            continue
+        spans.append(Span(start, end, T.ORG, tok, "paren-city", PRIORITY["ORG"]))
+    return spans
+
+
+# 简称后缀：出现「核心词+这些词」就算同一家单位
+ORG_SHORT_SUFFIX = ("集团", "公司", "团队", "文化", "传媒", "工作室", "实业", "科技", "事务所")
+_CITY_LEAD = ("北京", "上海", "天津", "重庆", "广州", "深圳", "杭州", "南京", "成都",
+              "武汉", "西安", "苏州", "郑州", "长沙", "青岛", "济南", "合肥", "福州",
+              "厦门", "宁波", "无锡", "大连", "沈阳", "哈尔滨", "长春", "昆明", "南昌")
+
+
+def _org_core(name: str) -> str:
+    """取单位名的「核心词」：去掉开头地名，取 2 个汉字（卓燃时尚… → 卓燃）。"""
+    body = name
+    for city in _CITY_LEAD:
+        if body.startswith(city):
+            body = body[len(city):]
+            break
+    m = re.match(r"[\u4e00-\u9fa5]{2}", body)
+    return m.group(0) if m else ""
+
+
+def find_org_shorts(text: str, org_spans: list[Span]) -> list[Span]:
+    """简称：全称是「卓燃时尚（北京）文化传媒」，文中又出现「卓燃团队」「卓燃文化」。"""
+    cores = set()
+    for sp in org_spans:
+        c = _org_core(sp.text)
+        if c:
+            cores.add(c)
+    if not cores:
+        return []
+    spans: list[Span] = []
+    for core in cores:
+        for suf in ORG_SHORT_SUFFIX:
+            token = core + suf
+            start = 0
+            while True:
+                i = text.find(token, start)
+                if i < 0:
+                    break
+                start = i + 1
+                end = i + len(token)
+                # 已经被全称覆盖的不要重复
+                if any(i < t.end and t.start < end for t in org_spans):
+                    continue
+                spans.append(Span(i, end, T.ORG, token, "org-short",
+                                  PRIORITY["ORG"], sub=suf))
+    return spans
+
+
 def find_orgs(text: str) -> list[Span]:
     spans: list[Span] = []
     seen: set[tuple[int, int]] = set()
@@ -395,7 +492,10 @@ def detect(text: str, keep_names: set[str] | None = None) -> list[Span]:
     spans: list[Span] = []
     spans += extras.find_structured(text)
     spans += find_addresses(text)
-    spans += find_orgs(text)
+    org_spans = find_orgs(text)
+    spans += org_spans
+    spans += find_paren_orgs(text, org_spans)
+    spans += find_org_shorts(text, org_spans + [x for x in spans if x.kind == T.ORG])
     spans += find_persons(text, keep)
     spans += find_partial_names(text)
     spans = resolve(spans)
