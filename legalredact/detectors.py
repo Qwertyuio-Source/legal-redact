@@ -295,6 +295,33 @@ def find_enumerated_names(text: str, keep: set[str] | None = None) -> list[Span]
     return spans
 
 
+# 整行/整格就是地址或号码（表格被摊平成一行一行时的典型形态）
+RE_STANDALONE_ADDR = re.compile(
+    r"^(?:[\u4e00-\u9fa5]{2,10}(?:省|自治区|特别行政区)?)[\u4e00-\u9fa5\d]{2,10}"
+    r"(?:市|自治州|地区)[\u4e00-\u9fa5\d]{2,12}(?:区|县|市)?[\u4e00-\u9fa5\d]{0,20}"
+    r"(?:路|街|巷|道|村|镇|号)[\u4e00-\u9fa5\d\-]{0,20}$")
+
+
+def find_standalone(text: str) -> list[Span]:
+    """没锚点、整行就是地址/证件号/电话的情况（docx/xlsx 表格最常见）。"""
+    spans: list[Span] = []
+    pos = 0
+    for line in text.split("\n"):
+        line_start = pos
+        pos += len(line) + 1
+        tok = line.strip()
+        if not tok or len(tok) < 6:
+            continue
+        offset = line_start + line.find(tok)
+        if 8 <= len(tok) <= 60 and RE_STANDALONE_ADDR.match(tok):
+            # 至少命中 3 个地址特征，避免把项目名当地址
+            hits = sum(1 for k in ("省", "市", "区", "县", "路", "街", "号", "镇", "村") if k in tok)
+            if hits >= 2:
+                spans.append(Span(offset, offset + len(tok), T.ADDRESS, tok,
+                                  "standalone-addr", PRIORITY["ADDRESS"]))
+    return spans
+
+
 def find_org_shorts(text: str, org_spans: list[Span]) -> list[Span]:
     """简称：全称是「卓燃时尚（北京）文化传媒」，文中又出现「卓燃团队」「卓燃文化」。"""
     cores = set()
@@ -554,6 +581,7 @@ def detect(text: str, keep_names: set[str] | None = None) -> list[Span]:
     spans += find_org_shorts(text, org_spans + [x for x in spans if x.kind == T.ORG])
     spans += find_table_names(text)
     spans += find_enumerated_names(text, keep)
+    spans += find_standalone(text)
     spans += find_persons(text, keep)
     spans += find_partial_names(text)
     spans = resolve(spans)
