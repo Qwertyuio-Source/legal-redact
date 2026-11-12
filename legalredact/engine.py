@@ -96,8 +96,27 @@ class Redactor:
         ]
         return results
 
+    # 独立于检测器的兜底扫描：成品里还留着这些"形状"，就一定有问题
+    _LEFTOVER_PATTERNS = [
+        (re.compile(r"\b\d{17}[\dXx]\b"), "疑似身份证号未脱"),
+        (re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"), "疑似手机号未脱"),
+        (re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"), "疑似邮箱未脱"),
+        (re.compile(r"[\u4e00-\u9fa5]{2,10}(?:有限公司|有限责任公司|事务所|集团)"), "疑似单位名未脱"),
+        (re.compile(r"[\u4e00-\u9fa5]{2,6}(?:省|自治区)[\u4e00-\u9fa5]{2,8}(?:市|县)"), "疑似地址未脱"),
+    ]
+
+    def _pattern_leftovers(self, results: list[BlockResult]) -> None:
+        for bi, br in enumerate(results):
+            for rx, note in self._LEFTOVER_PATTERNS:
+                for m in rx.finditer(br.redacted):
+                    tok = m.group(0)
+                    if "某" in tok or "×" in tok:
+                        continue
+                    self.issues.append(Issue("leftover", tok, note, bi + 1))
+
     # ---------- 自检 ----------
     def _self_check(self, results: list[BlockResult]) -> None:
+        self._pattern_leftovers(results)
         replacements = self.renderer.replacements
         for bi, br in enumerate(results):
             covered = [(s[0], s[1]) for s in br.pos_spans]
@@ -107,9 +126,7 @@ class Redactor:
                     continue
                 if sp.text in replacements or "某" in sp.text or "×" in sp.text:
                     continue
-                if sp.kind in (T.ID_CARD, T.PHONE, T.EMAIL, T.LANDLINE,
-                               T.USCC, T.BANK_ACCOUNT):
-                    continue
+                # 证件号/电话/邮箱留在成品里 = 真漏了，必须报出来
                 self.issues.append(Issue("leftover", sp.text,
                                          f"二次扫描仍有残留（{sp.rule}）", bi + 1))
 
