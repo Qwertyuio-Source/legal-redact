@@ -126,6 +126,31 @@
   }
 
   /** 简称：全称「卓燃时尚（北京）文化传媒」，文中又出现「卓燃团队」「卓燃文化」 */
+  const TABLE_SPLIT = /[\t|\uFF5C]/;
+
+  /** 表格行首列常见「姓名\t职务\t身份证」，没锚点也要认 */
+  function findTableNames(text) {
+    const out = [];
+    let pos = 0;
+    for (const line of text.split("\n")) {
+      const lineStart = pos;
+      pos += line.length + 1;
+      if (!TABLE_SPLIT.test(line)) continue;
+      for (const cell of line.split(TABLE_SPLIT)) {
+        const tok = cell.trim();
+        if (tok.length < 2 || tok.length > 3) continue;
+        if (S.NAME_STOPWORDS.has(tok)) continue;
+        if (!is_valid_name(tok)) continue;
+        const idx = line.indexOf(tok);
+        if (idx < 0) continue;
+        out.push({ start: lineStart + idx, end: lineStart + idx + tok.length,
+                   kind: T.PERSON, text: tok, rule: "table-cell",
+                   priority: PRIORITY.PERSON, sub: "" });
+      }
+    }
+    return out;
+  }
+
   function findOrgShorts(text, orgSpans) {
     const cores = new Set();
     for (const sp of orgSpans) { const c = orgCore(sp.text); if (c) cores.add(c); }
@@ -372,6 +397,7 @@
     spans.push(...orgSpans);
     spans.push(...findParenOrgs(text, orgSpans));
     spans.push(...findOrgShorts(text, orgSpans.concat(spans.filter((x) => x.kind === T.ORG))));
+    spans.push(...findTableNames(text));
     spans.push(...findPersons(text, keep));
     spans.push(...findPartialNames(text));
     const resolved = resolve(spans);
