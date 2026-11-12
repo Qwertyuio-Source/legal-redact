@@ -241,6 +241,33 @@ def _org_core(name: str) -> str:
     return m.group(0) if m else ""
 
 
+_TABLE_SPLIT = re.compile(r"[\t|\uFF5C]")
+
+
+def find_table_names(text: str) -> list[Span]:
+    """表格行首列常见「姓名\t职务\t身份证」这种，没锚点也要认。"""
+    spans: list[Span] = []
+    pos = 0
+    for line in text.split("\n"):
+        line_start = pos
+        pos += len(line) + 1
+        if len(_TABLE_SPLIT.findall(line)) < 1:
+            continue
+        cells = _TABLE_SPLIT.split(line)
+        for cell in cells:
+            tok = cell.strip()
+            if not (2 <= len(tok) <= 3) or tok in data.NAME_STOPWORDS:
+                continue
+            if not is_valid_name(tok):
+                continue
+            idx = line.find(tok)
+            if idx < 0:
+                continue
+            spans.append(Span(line_start + idx, line_start + idx + len(tok),
+                              T.PERSON, tok, "table-cell", PRIORITY["PERSON"]))
+    return spans
+
+
 def find_org_shorts(text: str, org_spans: list[Span]) -> list[Span]:
     """简称：全称是「卓燃时尚（北京）文化传媒」，文中又出现「卓燃团队」「卓燃文化」。"""
     cores = set()
@@ -496,6 +523,7 @@ def detect(text: str, keep_names: set[str] | None = None) -> list[Span]:
     spans += org_spans
     spans += find_paren_orgs(text, org_spans)
     spans += find_org_shorts(text, org_spans + [x for x in spans if x.kind == T.ORG])
+    spans += find_table_names(text)
     spans += find_persons(text, keep)
     spans += find_partial_names(text)
     spans = resolve(spans)
