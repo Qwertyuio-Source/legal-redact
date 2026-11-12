@@ -151,6 +151,34 @@
     return out;
   }
 
+  const RE_NAME_LIST = /[\u4e00-\u9fa5]{2,3}(?:、[\u4e00-\u9fa5]{2,3}){1,}/g;
+
+  /** 顿号并列的人名：「王伟、李娜、赵强」 */
+  /** 顿号并列的人名：「王伟、李娜、赵强」 */
+  function findEnumeratedNames(text, keep) {
+    const out = [];
+    RE_NAME_LIST.lastIndex = 0;
+    let m;
+    while ((m = RE_NAME_LIST.exec(text))) {
+      let pos = m.index;
+      for (const raw of m[0].split("、")) {
+        let picked = null;
+        for (const L of [raw.length, 2]) {
+          if (L < 2 || L > raw.length) continue;
+          const t = raw.slice(0, L);
+          if (keep && keep.has(t)) break;
+          if (is_valid_name(t) && plausible_name(t)) { picked = t; break; }
+        }
+        if (picked) {
+          out.push({ start: pos, end: pos + picked.length, kind: T.PERSON, text: picked,
+                     rule: "name-list", priority: PRIORITY.PERSON, sub: "" });
+        }
+        pos += raw.length + 1;
+      }
+    }
+    return out;
+  }
+
   function findOrgShorts(text, orgSpans) {
     const cores = new Set();
     for (const sp of orgSpans) { const c = orgCore(sp.text); if (c) cores.add(c); }
@@ -398,6 +426,7 @@
     spans.push(...findParenOrgs(text, orgSpans));
     spans.push(...findOrgShorts(text, orgSpans.concat(spans.filter((x) => x.kind === T.ORG))));
     spans.push(...findTableNames(text));
+    spans.push(...findEnumeratedNames(text, keep));
     spans.push(...findPersons(text, keep));
     spans.push(...findPartialNames(text));
     const resolved = resolve(spans);
