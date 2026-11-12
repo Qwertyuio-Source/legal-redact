@@ -179,6 +179,32 @@
     return out;
   }
 
+  const RE_STANDALONE_ADDR = new RegExp(
+    "^(?:[\\u4e00-\\u9fa5]{2,10}(?:省|自治区|特别行政区)?)[\\u4e00-\\u9fa5\\d]{2,10}" +
+    "(?:市|自治州|地区)[\\u4e00-\\u9fa5\\d]{2,12}(?:区|县|市)?[\\u4e00-\\u9fa5\\d]{0,20}" +
+    "(?:路|街|巷|道|村|镇|号)[\\u4e00-\\u9fa5\\d\\-]{0,20}$");
+
+  /** 整行就是地址（表格摊平后的典型形态） */
+  function findStandalone(text) {
+    const out = [];
+    let pos = 0;
+    for (const line of text.split("\n")) {
+      const lineStart = pos;
+      pos += line.length + 1;
+      const tok = line.trim();
+      if (!tok || tok.length < 6) continue;
+      if (tok.length <= 60 && RE_STANDALONE_ADDR.test(tok)) {
+        const hits = ["省", "市", "区", "县", "路", "街", "号", "镇", "村"].filter((k) => tok.includes(k)).length;
+        if (hits >= 2) {
+          const offset = lineStart + line.indexOf(tok);
+          out.push({ start: offset, end: offset + tok.length, kind: T.ADDRESS,
+                     text: tok, rule: "standalone-addr", priority: PRIORITY.ADDRESS, sub: "" });
+        }
+      }
+    }
+    return out;
+  }
+
   function findOrgShorts(text, orgSpans) {
     const cores = new Set();
     for (const sp of orgSpans) { const c = orgCore(sp.text); if (c) cores.add(c); }
@@ -427,6 +453,7 @@
     spans.push(...findOrgShorts(text, orgSpans.concat(spans.filter((x) => x.kind === T.ORG))));
     spans.push(...findTableNames(text));
     spans.push(...findEnumeratedNames(text, keep));
+    spans.push(...findStandalone(text));
     spans.push(...findPersons(text, keep));
     spans.push(...findPartialNames(text));
     const resolved = resolve(spans);
