@@ -76,17 +76,36 @@
     return body.length >= 2;
   }
 
-  const RE_PAREN_CITY = /[\u4e00-\u9fa5]{2,8}[（(][\u4e00-\u9fa5]{2,4}[）)][\u4e00-\u9fa5]{2,10}/g;
+  const RE_PAREN_CITY = /[\u4e00-\u9fa5]{2,8}[（(][\u4e00-\u9fa5]{2,4}[）)]\s*[\u4e00-\u9fa5]{2,10}/g;
   const ORG_TAIL_STOP = new Set("为所的进行由与和及在是，。、；：！？\n".split(""));
   const ORG_LEAD = new Set("由与和及在是对向给被让使据经项其该".split(""));
   const ORG_TAIL_VERB = new Set("迟未已将正均都也仍却则并且后前中内上下还又再才就".split(""));
 
+  const ORG_TAIL_WORDS = (R.ORG_INDUSTRY || []).concat(R.ORG_SUFFIXES || [])
+    .sort((a, b) => b.length - a.length);
+  const RE_ORG_TAIL = new RegExp("(?:" + ORG_TAIL_WORDS.join("|") + ")+$");
+
+  /** 单位名末尾的类型词：北京鼎盛科技有限公司 → 科技有限公司 */
+  function orgTail(name) {
+    const m = RE_ORG_TAIL.exec(name || "");
+    if (!m) return "";
+    const tail = m[0];
+    if (tail === name || tail.length < 2) return "";
+    return tail;
+  }
+
   /** 「XX（北京）YY」这种不以「公司」结尾的单位名，括号+地名是很强的信号 */
+  const BRACKET_MAP = { "〈": "（", "〉": "）", "【": "（", "】": "）", "〔": "（", "〕": "）", "＜": "（", "＞": "）" };
+  function normalizeBrackets(s) {
+    return s.replace(/[〈〉【】〔〕＜＞]/g, (c) => BRACKET_MAP[c] || c);
+  }
+
   function findParenOrgs(text, taken) {
     const out = [];
+    const norm = normalizeBrackets(text);   // 长度不变，位置可直接用
     RE_PAREN_CITY.lastIndex = 0;
     let m;
-    while ((m = RE_PAREN_CITY.exec(text))) {
+    while ((m = RE_PAREN_CITY.exec(norm))) {
       let tok = m[0];
       const cp = Math.max(tok.indexOf("）"), tok.indexOf(")"));
       if (cp < 0) continue;
@@ -102,13 +121,13 @@
       if (cp2 < 0) continue;
       const tail = tok.length - cp2 - 1;
       if (tail < 2 || tail > 10) continue;
-      if (R.ORG_SUFFIXES.some((suf) => tok.endsWith(suf))) continue;
       if (T.PRESERVE.some(([, rx]) => rx.test(tok))) continue;
       const start = m.index + nLead;
       const end = start + tok.length;
-      if (taken && taken.some((t) => start < t.end && t.start < end)) continue;
-      out.push({ start, end, kind: T.ORG, text: tok,
-                 rule: "paren-city", priority: PRIORITY.ORG, sub: "" });
+      // 只在「已被完全覆盖」时跳过；更长的括号名应该赢
+      if (taken && taken.some((t) => t.start <= start && end <= t.end)) continue;
+      out.push({ start, end, kind: T.ORG, text: text.slice(start, end),
+                 rule: "paren-city", priority: PRIORITY.ORG, sub: orgTail(tok) || "公司" });
     }
     return out;
   }
@@ -251,10 +270,8 @@
       const key = cstart + ":" + end;
       if (seen.has(key)) continue;
       seen.add(key);
-      let sub = suffix;
-      for (const s of ["股份有限公司", "有限责任公司", "有限公司", "公司"]) {
-        if (suffix.endsWith(s)) { sub = "公司"; break; }
-      }
+      // 替身保留类型尾巴：北京鼎盛科技有限公司 → 某某某科技有限公司
+      const sub = orgTail(text.slice(cstart, end)) || suffix;
       spans.push({ start: cstart, end, kind: T.ORG, text: text.slice(cstart, end),
                    rule: "org-suffix", priority: PRIORITY.ORG, sub });
     }
@@ -447,9 +464,22 @@
     const spans = [];
     spans.push(...X.findStructured(text));
     spans.push(...findAddresses(text));
-    const orgSpans = findOrgs(text);
+    let orgSpans = findOrgs(text);
     spans.push(...orgSpans);
-    spans.push(...findParenOrgs(text, orgSpans));
+    const parenSpans = findParenOrgs(text, orgSpans);
+    // 括号名比后缀规则认得更长时，把被它整个包住的短 span 去掉，避免同一家脱两次
+    if (parenSpans.length) {
+      orgSpans = orgSpans.filter((o) => !parenSpans.some((p2) => p2.start <= o.start && o.end <= p2.end));
+      const keepIds = new Set(orgSpans);
+      const idx = spans.findIndex((x) => x === orgSpans[0]);
+      for (let i = spans.length - 1; i >= 0; i -= 1) {
+        const o = spans[i];
+        if (o.kind === T.ORG && parenSpans.some((p2) => p2.start <= o.start && o.end <= p2.end)) {
+          spans.splice(i, 1);
+        }
+      }
+    }
+    spans.push(...parenSpans);
     spans.push(...findOrgShorts(text, orgSpans.concat(spans.filter((x) => x.kind === T.ORG))));
     spans.push(...findTableNames(text));
     spans.push(...findEnumeratedNames(text, keep));
