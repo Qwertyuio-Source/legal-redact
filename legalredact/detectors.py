@@ -172,8 +172,41 @@ def _org_ok(cand: str, suffix: str, text: str, end: int) -> bool:
     return True
 
 
+# 单位名里的「行业词」：替换时保留，读起来才像人话（某某某科技有限公司）
+ORG_INDUSTRY = (
+    "科技", "文化", "传媒", "贸易", "商贸", "实业", "信息", "网络", "软件", "电子",
+    "机械", "建筑", "装饰", "环保", "能源", "材料", "医药", "生物", "化工", "食品",
+    "服装", "置业", "地产", "建设", "工程", "设计", "咨询", "投资", "担保", "租赁",
+    "物业", "物流", "教育", "旅游", "餐饮", "农业", "集团", "控股", "发展", "管理",
+    "服务", "技术", "制造", "金融", "供应链", "机电", "设备", "仪器", "自动化",
+    "智能", "数据", "数字", "新能源", "新材料", "半导体", "汽车", "运输", "仓储",
+    "酒店", "娱乐", "影视", "广告", "会展", "体育", "医疗", "健康", "养老", "培训",
+    "会计", "审计", "评估", "拍卖", "出版", "演艺", "航空", "船舶", "印刷", "包装",
+)
+
+RE_ORG_TAIL = re.compile(
+    r"(?:" + "|".join(sorted(ORG_INDUSTRY + tuple(data.ORG_SUFFIXES), key=len, reverse=True)) + r")+$")
+
+
+def org_tail(name: str) -> str:
+    """取单位名末尾的「类型尾巴」：北京鼎盛科技有限公司 → 科技有限公司。"""
+    m = RE_ORG_TAIL.search(name)
+    if not m:
+        return ""
+    tail = m.group(0)
+    # 尾巴不能等于整个名字（否则等于没脱），也不能太短
+    if tail == name or len(tail) < 2:
+        return ""
+    return tail
+
+
+# 括号归一化：OCR 常把（）认成〈〉【】，长度相同，位置不受影响
+_BRACKET_MAP = str.maketrans({"〈": "（", "〉": "）", "【": "（", "】": "）",
+                              "〔": "（", "〕": "）", "＜": "（", "＞": "）"})
+
+
 RE_PAREN_CITY = re.compile(
-    r"[\u4e00-\u9fa5]{2,8}[（(][\u4e00-\u9fa5]{2,4}[）)][\u4e00-\u9fa5]{2,10}")
+    r"[\u4e00-\u9fa5]{2,8}[（(][\u4e00-\u9fa5]{2,4}[）)]\s*[\u4e00-\u9fa5]{2,10}")
 # 括号后面遇到这些字就截断（"…文化传媒为主体进行落地" → "…文化传媒"）
 _ORG_TAIL_STOP = set("为所的进行由与和及在是，。、；：！？\n")
 _ORG_TAIL_VERB = set("迟未已将正均都也仍却则并且后前中内上下还又再才就")
@@ -186,7 +219,8 @@ def find_paren_orgs(text: str, taken: list[Span] | None = None) -> list[Span]:
     后缀规则抓不到，但括号+地名是很强的信号。
     """
     spans: list[Span] = []
-    for m in RE_PAREN_CITY.finditer(text):
+    norm = text.translate(_BRACKET_MAP)      # 长度不变，位置可直接用
+    for m in RE_PAREN_CITY.finditer(norm):
         tok = m.group(0)
         cp = max(tok.find("）"), tok.find(")"))
         if cp < 0:
@@ -210,16 +244,18 @@ def find_paren_orgs(text: str, taken: list[Span] | None = None) -> list[Span]:
         tail = len(tok) - cp - 1
         if tail < 2 or tail > 10:
             continue
-        if any(tok.endswith(suf) for suf in data.ORG_SUFFIXES):
-            continue          # 交给后缀规则，避免重复
+        # 注意：不要因为「以公司结尾」就跳过——括号名往往比后缀规则认得更长
+        # （北京易盛（集团) 科技有限公司），重复由下面的包含判断处理
         if any(rx.search(tok) for _name, rx in T.PRESERVE_RULES):
             continue          # 法院/检察院/案号之类不脱
         start = m.start() + n_lead
         end = start + len(tok)
+        tok_orig = text[start:end]           # 用原文（保留它自己的括号写法）
         # 已经和后缀规则认出的是同一家，就不要再重复标
-        if taken and any(start < t.end and t.start < end for t in taken):
-            continue
-        spans.append(Span(start, end, T.ORG, tok, "paren-city", PRIORITY["ORG"]))
+        if taken and any(t.start <= start and end <= t.end for t in taken):
+            continue      # 已被后缀规则完全覆盖，不用重复
+        spans.append(Span(start, end, T.ORG, tok_orig, "paren-city", PRIORITY["ORG"],
+                          sub=org_tail(tok) or "公司"))
     return spans
 
 
@@ -380,11 +416,8 @@ def find_orgs(text: str) -> list[Span]:
             continue
         # 去掉前面仍然是截断的情况（左邻是汉字且不是常见修饰，说明可能切多了）
         seen.add((cstart, end))
-        sub = suffix
-        for s in ("股份有限公司", "有限责任公司", "有限公司", "公司"):
-            if suffix.endswith(s):
-                sub = "公司"
-                break
+        # 替身保留类型尾巴：北京鼎盛科技有限公司 → 某某某科技有限公司
+        sub = org_tail(text[cstart:end]) or suffix
         spans.append(Span(cstart, end, T.ORG, text[cstart:end], "org-suffix", PRIORITY["ORG"], sub))
     return spans
 
