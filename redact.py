@@ -78,17 +78,26 @@ def process_docx(path: Path, out_dir: Path, cfg: dict, name: str) -> dict:
     doc = Document(str(path))
     paras = docio.iter_paragraphs(doc)
     texts = [p.text for p in paras]
+
+    # 批注/脚注/页眉页脚里的文字一起准备，保证同一个实体是同一个替身
+    from legalredact.docxraw import apply_extra_texts, collect_extra_texts
+    extra_texts = collect_extra_texts(path)
+
     redactor = new_redactor(cfg)
-    results = redactor.prepare(texts)
+    results = redactor.prepare(texts + extra_texts)
 
     changed = 0
-    for p, br in zip(paras, results):
+    for p, br in zip(paras, results[:len(texts)]):
         if br.spans:
             docio.rewrite_paragraph(p, br.spans)
             changed += 1
 
     out_path = out_dir / f"{name}.脱敏.docx"
-    doc.save(str(out_path))
+    tmp_path = out_dir / f".{name}.body.tmp.docx"
+    doc.save(str(tmp_path))
+    # 附加部件用同一批 prepare 结果回写
+    extra_res = apply_extra_texts(tmp_path, out_path, [br.redacted for br in results[len(texts):]])
+    tmp_path.unlink(missing_ok=True)
 
     preview_lines = ["原文  →  脱敏后", "=" * 60]
     for br in results:
