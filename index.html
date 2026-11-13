@@ -182,7 +182,7 @@ label.dropzone { display: block; }
     <div class="mark">脱</div>
     <h1>法律文书脱敏</h1>
     <p class="sub">当事人姓名、单位名、住址、身份证、电话换成替身 · 全部在本机浏览器内完成，文件不上传
-      <span style="color:#9aa1ad;font-size:12px">· v0.3.5 · 11-13 00:31</span></p>
+      <span style="color:#9aa1ad;font-size:12px">· v0.3.5 · 11-13 13:23</span></p>
   </header>
 
   <div class="tabs">
@@ -1697,6 +1697,8 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
   const enc = new TextEncoder();
 
   const T_RE = /<w:t\b([^>]*?)(?:\/>|>([\s\S]*?)<\/w:t>)/g;
+  // 批注 / 脚注 / 尾注 / 页眉页脚：正文之外的文字，python-docx 不处理，这里补上
+  const EXTRA_PART_RE = /^word\/(?:comments|commentsExtended|footnotes|endnotes|header\d*|footer\d*)\.xml$/;
   const PARA_RE = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
 
   function unescapeXml(s) {
@@ -1783,6 +1785,25 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
     return out;
   }
 
+  /** 取出一个附加部件里所有 <w:t> 的文字 */
+  function extraTexts(xml) {
+    const out = [];
+    T_RE.lastIndex = 0;
+    let m;
+    while ((m = T_RE.exec(xml))) out.push(unescapeXml(m[2] || ""));
+    return out;
+  }
+
+  /** 用已经算好的结果回写附加部件（按名字排序，和收集顺序一致） */
+  function rebuildExtra(xml, redacted) {
+    let idx = 0;
+    return xml.replace(T_RE, (whole, attrs, content) => {
+      const after = redacted[idx] !== undefined ? redacted[idx] : unescapeXml(content || "");
+      idx += 1;
+      return "<w:t" + attrs + ">" + escapeXml(after) + "</w:t>";
+    });
+  }
+
   async function processDocx(bytes, config, opts) {
     opts = opts || {};
     const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -1793,12 +1814,31 @@ window.__PDFJS_WORKER_GZ_B64 = 'H4sIAIpk42oC/9S97XLbyLIg+H+egsLtywtYEEWQ1BdomCPr
 
     const xml = dec.decode(docXml);
     const paras = collectParagraphs(xml);
-    const redactor = new ENGINE.Redactor(config, opts.mode, opts.maskStyle, opts.redactLen);
-    const results = redactor.prepare(paras.map((p) => p.text));
-    const newXml = rebuildXml(xml, results);
 
+    // 附加部件（批注/脚注/页眉页脚）和正文一起 prepare，保证同一个实体是同一个替身
+    const extraNames = [...files.keys()].filter((n) => EXTRA_PART_RE.test(n)).sort();
+    const extraXml = extraNames.map((n) => dec.decode(files.get(n)));
+    const extraAll = [];
+    for (const x of extraXml) extraAll.push(...extraTexts(x));
+
+    const redactor = new ENGINE.Redactor(config, opts.mode, opts.maskStyle, opts.redactLen);
+    const results = redactor.prepare(paras.map((p) => p.text).concat(extraAll));
+    const bodyResults = results.slice(0, paras.length);
+    const extraResults = results.slice(paras.length);
+
+    const newXml = rebuildXml(xml, bodyResults);
     files.set("word/document.xml", enc.encode(newXml));
-    return { bytes: await ZIP.writeZip(files), redactor, results };
+
+    // 回写附加部件
+    let idx = 0;
+    extraNames.forEach((n, i) => {
+      const count = extraTexts(extraXml[i]).length;
+      const slice = extraResults.slice(idx, idx + count).map((r) => r.redacted);
+      idx += count;
+      files.set(n, enc.encode(rebuildExtra(extraXml[i], slice)));
+    });
+
+    return { bytes: await ZIP.writeZip(files), redactor, results: bodyResults };
   }
 
   function processText(text, config, opts) {
