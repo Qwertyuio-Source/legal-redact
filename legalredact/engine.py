@@ -105,13 +105,21 @@ class Redactor:
         (re.compile(r"[\u4e00-\u9fa5]{2,6}(?:省|自治区)[\u4e00-\u9fa5]{2,8}(?:市|县)"), "疑似地址未脱"),
     ]
 
+    # 这些词跟在地址后面，说明是法院/检察院这类「按口径保留」的机构名
+    _KEEP_AFTER = ("法院", "人民检察院", "检察院", "公安局", "派出所", "看守所", "监狱",
+                   "仲裁委", "仲裁院", "公证处", "人民政府", "司法局")
+
     def _pattern_leftovers(self, results: list[BlockResult]) -> None:
         for bi, br in enumerate(results):
+            text = br.redacted
             for rx, note in self._LEFTOVER_PATTERNS:
-                for m in rx.finditer(br.redacted):
+                for m in rx.finditer(text):
                     tok = m.group(0)
                     if "某" in tok or "×" in tok:
                         continue
+                    after = text[m.end(): m.end() + 14]
+                    if any(k in after for k in self._KEEP_AFTER):
+                        continue      # 法院/检察院/政府这类机构，本来就保留
                     self.issues.append(Issue("leftover", tok, note, bi + 1))
 
     # ---------- 自检 ----------
