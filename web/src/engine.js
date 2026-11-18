@@ -177,11 +177,16 @@
     }
 
     selfCheck(results) {
+      // 法院/检察院这类机构名按口径保留，别当成漏脱
+      const KEEP_AFTER = ["法院", "人民检察院", "检察院", "公安局", "派出所", "看守所",
+                          "监狱", "仲裁委", "仲裁院", "公证处", "人民政府", "司法局"];
       results.forEach((br, bi) => {
         const covered = br.posSpans.map((s) => [s[0], s[1]]);
         for (const sp of D.detect(br.redacted)) {
           if (covered.some(([a, b]) => sp.start < b && a < sp.end)) continue;
           if (this.renderer.replacements.has(sp.text) || sp.text.includes("某") || sp.text.includes("×")) continue;
+          const after = br.redacted.slice(sp.end, sp.end + 14);
+          if (KEEP_AFTER.some((k) => after.indexOf(k) >= 0)) continue;
           this.issues.push({ kind: "leftover", text: sp.text,
                              note: "二次扫描仍有残留（" + sp.rule + "）", block: bi + 1 });
         }
