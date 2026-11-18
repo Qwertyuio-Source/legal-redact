@@ -18,7 +18,7 @@ TEMPLATE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <!-- 保密加固：禁止一切网络请求（fetch/XHR/外链资源），页面只能在本机算 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'self' blob: 'wasm-unsafe-eval'; worker-src blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'self' file: blob: 'wasm-unsafe-eval'; worker-src blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <title>法律文书脱敏</title>
 <style>
 __CSS__
@@ -293,6 +293,82 @@ __JS__
 """
 
 
+def build_standalone():
+    """单文件整包：OCR 以「文本数据」形式内嵌，不在打开时编译，图片时才解码执行。"""
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+
+    parts = []
+    for f in ORDER:                      # OCR 不在这里
+        code = (SRC / f).read_text(encoding="utf-8")
+        parts.append(
+            "<script>window.__boot=(window.__boot||[]);window.__boot.push(" + repr(f) + ");\n"
+            + code + "\n</script>"
+        )
+    js = "\n".join(parts)
+
+    # OCR 源码放进 <script type="text/plain">：浏览器不会编译它，打开快
+    ocr_src = (SRC / "ocrweb.js").read_text(encoding="utf-8")
+    assert "</script" not in ocr_src.lower(), "OCR 源码里有 </script，需要换编码方式"
+    ocr_block = ('<script id="lr-ocr-src" type="text/plain">' + ocr_src + "</script>\n")
+
+    loader = """<script>
+/* 单文件版：OCR 存在上面的 text/plain 里，第一次处理图片时才解码执行 */
+window.LR_OCR_LOAD = function () {
+  if (window.LR_OCR) return Promise.resolve(window.LR_OCR);
+  if (window.__lrOcrLoading) return window.__lrOcrLoading;
+  window.__lrOcrLoading = new Promise(function (resolve, reject) {
+    try {
+      var box = document.getElementById("lr-ocr-src");
+      var code = box ? box.textContent : "";
+      if (!code) { reject(new Error("内嵌的 OCR 源码丢了")); return; }
+      var url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+      var s = document.createElement("script");
+      s.src = url;
+      s.onload = function () {
+        URL.revokeObjectURL(url);
+        if (window.LR_OCR) resolve(window.LR_OCR);
+        else reject(new Error("OCR 加载了但没注册 LR_OCR"));
+      };
+      s.onerror = function () { URL.revokeObjectURL(url); reject(new Error("OCR 解码失败")); };
+      document.head.appendChild(s);
+    } catch (e) { reject(e); }
+  });
+  return window.__lrOcrLoading;
+};
+</script>
+"""
+
+    pdfjs = (SRC / "pdf.min.js").read_text(encoding="utf-8")
+    worker = (SRC / "pdfjs.worker.b64.js").read_text(encoding="utf-8")
+    ver = "v0.4.6 单文件版 · " + datetime.datetime.now().strftime("%m-%d %H:%M")
+    html = (TEMPLATE.replace("__VERSION__", ver)
+            .replace("__CSS__", css)
+            .replace("__PDFJS__", pdfjs)
+            .replace("__WORKER__", worker)
+            .replace("__JS__", js))
+    # 先删掉模板里那个指向外部 ocr.js 的加载器，换上单文件版
+    mark = '<script>\n/* OCR（tesseract'
+    i = html.find(mark)
+    if i < 0:
+        raise SystemExit("找不到模板里的 OCR 加载器，单文件版没法替换")
+    j = html.find("</script>", i)
+    if j < 0:
+        raise SystemExit("加载器块不完整")
+    html = html[:i] + html[j + len("</script>"):]
+    if 's.src = "ocr.js"' in html:
+        raise SystemExit("旧加载器还在，单文件版会加载不到 OCR")
+    html = html.replace("</head>", loader + "</head>")
+    html = html.replace("</body>", ocr_block + "</body>")
+    out = ROOT / "standalone.html"
+    out.write_text(html, encoding="utf-8")
+    print(f"生成 {out}（{out.stat().st_size / 1024 / 1024:.2f} MB，单文件版·OCR 延迟编译）")
+
+
+def loader_marker():
+    """定位模板里那段 LR_OCR_LOAD 加载器（用于替换成单文件版）"""
+    return '<script>\n/* OCR（tesseract，约 10MB）不随页面加载'
+
+
 def main():
     css = (SRC / "styles.css").read_text(encoding="utf-8")
 
@@ -327,3 +403,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    build_standalone()
