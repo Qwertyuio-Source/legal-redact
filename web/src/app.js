@@ -115,6 +115,14 @@
     }
 
     if (ext === "png" || ext === "jpg" || ext === "jpeg") {
+      // OCR 约 10MB，平时不加载；第一次处理图片时才拉
+      if (!window.LR_OCR && window.LR_OCR_LOAD) {
+        try {
+          await window.LR_OCR_LOAD();
+        } catch (e) {
+          throw new Error("图片识别组件没加载成功（" + ((e && e.message) || e) + "），请刷新页面重试");
+        }
+      }
       if (!window.LR_IMG || !window.LR_IMG.available()) {
         throw new Error("这个浏览器不支持网页内 OCR，请用桌面版处理图片");
       }
@@ -199,6 +207,17 @@
     for (const r of rows) counts[r.kind] = (counts[r.kind] || 0) + 1;
     const detail = Object.entries(counts).map(([k, n]) => `${KIND_CN[k] || k} ${n}`).join(" · ") || "无";
 
+    if (!rows.length) {
+      return `<div class="card" data-idx="${idx}">
+        <div class="head"><span class="badge txt">${res.ext.toUpperCase()}</span>
+          <span class="name">${esc(res.name)}</span></div>
+        <div class="stats"><span class="stat warn">没有找到需要脱敏的信息</span></div>
+        <div style="padding:0 18px 16px;font-size:13.5px;color:var(--muted);line-height:1.8">
+          这份文件里没识别出人名 / 单位名 / 地址 / 证件号 / 电话。<br>
+          如果它其实是<b>扫描件或拍照</b>（整页是图片），请按上面的说明先把文字取出来。
+        </div>
+      </div>`;
+    }
     const stats = [
       `<span class="stat">脱敏 <b>${rows.length}</b> 处</span>`,
       `<span class="stat">${detail}</span>`,
@@ -329,9 +348,14 @@
 
   async function addFiles(fileList) {
     const all = [...fileList];
-    const files = all.filter((f) => /\.(docx|xlsx|txt|md|html|pdf|png|jpg|jpeg)$/i.test(f.name));
+    const OK_RE = /\.(docx|xlsx|txt|md|html|pdf|png|jpg|jpeg)$/i;
+    const files = all.filter((f) => OK_RE.test(f.name));
+    const rejected = all.filter((f) => !OK_RE.test(f.name));
     if (!files.length) {
-      if (!images.length) alert("支持 .docx / .txt / .md / .html / .pdf；图片请先用 图片PDF转文字.bat 转成文字。");
+      const names = rejected.map((f) => f.name).join("、");
+      alert("这些文件暂不支持：" + names +
+        "\n\n支持的类型：.docx / .xlsx / .txt / .md / .html / .pdf / .png / .jpg\n" +
+        "老的 .doc / .wps / .rtf 请先用 Word 或 WPS 另存为 .docx 再传。");
       return;
     }
 
@@ -357,22 +381,35 @@
       }
     }
     placeholder.remove();
+    if (rejected.length) {
+      const div = document.createElement("div");
+      div.className = "card";
+      div.innerHTML = `<div class="head"><span class="badge" style="background:var(--warn-soft);color:var(--warn)">跳过</span>
+        <span class="name">${rejected.map((f) => esc(f.name)).join("、")}</span></div>
+        <div class="stats"><span class="stat warn">格式不支持，没有处理。老的 .doc / .wps / .rtf 请先另存为 .docx 再传</span></div>`;
+      list.insertBefore(div, list.firstChild);
+    }
     render();
   }
 
   function showPdfGuide(names, kind) {
     kind = kind || "PDF";
     if (document.getElementById("pdf-guide")) return;
+    const isMac = /Mac|iPhone|iPad/i.test(navigator.userAgent);
+    const steps = isMac
+      ? `<b>1.</b> 用「预览」打开这个 PDF → 文件 → 导出为 <b>PNG</b> 图片（每页一张）<br>
+         <b>2.</b> 把导出的图片拖回这里，会自动识别并<b>在图上涂黑</b>`
+      : `<b>1.</b> 双击 <b>图片PDF转文字.bat</b>，把这个文件拖进黑窗口，回车<br>
+         <b>2.</b> 文字会自动复制到剪贴板，回来点 <b>「粘贴文字」</b>，Ctrl+V 再点「脱敏这段文字」`;
     const div = document.createElement("div");
     div.id = "pdf-guide";
     div.className = "card";
-    div.innerHTML = `<div class="head"><span class="badge" style="background:var(--warn-soft);color:var(--warn)">PDF / 图片</span>
+    div.innerHTML = `<div class="head"><span class="badge" style="background:var(--warn-soft);color:var(--warn)">${kind} · 扫描件</span>
       <span class="name">${names.map(esc).join("、")}</span></div>
       <div style="padding:0 18px 16px;font-size:14px;line-height:1.9">
-        这个文件里没有可读的文字层（是扫描/拍照），浏览器没法直接读。不用装软件，两步就行：<br>
-        <b>1.</b> 双击 <b>图片PDF转文字.bat</b>，把这个文件拖进黑窗口，回车<br>
-        <b>2.</b> 转换完的文字会<b>自动复制到剪贴板</b>，回到这里点 <b>「粘贴文字」</b>，Ctrl+V 再点「脱敏这段文字」<br>
-        <span style="color:var(--muted);font-size:13px">（用的是 Windows 自带中文 OCR，离线、不联网）</span>
+        这个文件里<b>没有可读的文字层</b>（是扫描/拍照），所以没能脱敏。<br>
+        ${steps}<br>
+        <span style="color:var(--muted);font-size:13px">${isMac ? "（图片识别在你自己的浏览器里跑，文件不上传）" : "（用的是 Windows 自带中文 OCR，离线、不联网）"}</span>
       </div>`;
     list.insertBefore(div, list.firstChild);
   }
