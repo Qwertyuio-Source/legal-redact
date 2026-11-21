@@ -62,6 +62,7 @@ def place_words() -> frozenset[str]:
         word = line.split("/")[0]
         if 2 <= len(word) <= 8:
             words.add(word)
+    words |= set(data.PLACE_EXTRA)
     return frozenset(words)
 
 
