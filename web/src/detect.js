@@ -38,6 +38,7 @@
     if (tok.includes("某")) return false;
     for (const ch of tok) if (S.NAME_REJECT_CHARS.has(ch)) return false;
     if (S.NAME_STOPWORDS.has(tok)) return false;
+    if (R.COMMON_WORDS && R.COMMON_WORDS.indexOf(tok) >= 0) return false;
     if (S.PLACE_TAIL.has(tok[tok.length - 1])) return false;
     for (const suf of R.ORG_SUFFIXES) if (tok.endsWith(suf)) return false;
     const head2 = tok.slice(0, 2);
@@ -148,26 +149,60 @@
   const TABLE_SPLIT = /[\t|\uFF5C]/;
 
   /** 表格行首列常见「姓名\t职务\t身份证」，没锚点也要认 */
+  const TABLE_HEADER_NAME = /(姓名|名字|人名|当事人|原告|被告|申请人|被申请人|负责人|法定代表人|联系人|经办人|代理人|辩护人|股东|员工|职工|收款人|付款人|签署人|签字人|审核人|权利人|义务人|户主|承租人|出借人)/;
+
+  /** 表格里的姓名：必须有姓名类表头才认，避免把「高水平」「国国」当人名 */
   function findTableNames(text) {
     const out = [];
+    const lines = text.split("\n");
+
+    let headerCols = null;
+    for (const line of lines) {
+      if (!/[\t|]/.test(line)) continue;
+      const cells = line.split(/[\t|]/).map((c) => c.trim());
+      const cols = {};
+      cells.forEach((c, i) => { if (TABLE_HEADER_NAME.test(c)) cols[i] = c; });
+      if (Object.keys(cols).length) { headerCols = cols; break; }
+    }
+
     let pos = 0;
-    for (const line of text.split("\n")) {
+    for (const line of lines) {
       const lineStart = pos;
       pos += line.length + 1;
-      if (!TABLE_SPLIT.test(line)) continue;
-      for (const cell of line.split(TABLE_SPLIT)) {
-        const tok = cell.trim();
-        if (tok.length < 2 || tok.length > 3) continue;
-        if (S.NAME_STOPWORDS.has(tok)) continue;
-        if (!is_valid_name(tok)) continue;
+      if (!/[\t|]/.test(line)) continue;
+      const cells = line.split(/[\t|]/).map((c) => c.trim());
+
+      const mk = (tok) => {
+        if (tok.length < 2 || tok.length > 3) return;
+        if (S.NAME_STOPWORDS.has(tok)) return;
+        if (R.COMMON_WORDS && R.COMMON_WORDS.indexOf(tok) >= 0) return;
+        if (!is_valid_name(tok) || !plausible_name(tok)) return;
         const idx = line.indexOf(tok);
-        if (idx < 0) continue;
-        out.push({ start: lineStart + idx, end: lineStart + idx + tok.length,
-                   kind: T.PERSON, text: tok, rule: "table-cell",
-                   priority: PRIORITY.PERSON, sub: "" });
+        if (idx < 0) return;
+        out.push({ start: lineStart + idx, end: lineStart + idx + tok.length, kind: T.PERSON,
+                   text: tok, rule: "table-cell", priority: PRIORITY.PERSON, sub: "" });
+      };
+
+      // 纵向：姓名 \t 张伟
+      for (let i = 0; i < cells.length - 1; i++) {
+        if (TABLE_HEADER_NAME.test(cells[i])) mk(cells[i + 1]);
+      }
+      // 横向：按表头列取数据行
+      if (headerCols) {
+        for (const k of Object.keys(headerCols)) {
+          const i = Number(k);
+          if (i < cells.length && !TABLE_HEADER_NAME.test(cells[i])) mk(cells[i]);
+        }
       }
     }
-    return out;
+    // 去重
+    const seen = new Set();
+    return out.filter((sp) => {
+      const key = sp.start + ":" + sp.end;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   const RE_NAME_LIST = /[\u4e00-\u9fa5]{2,3}(?:、[\u4e00-\u9fa5]{2,3}){1,}/g;
