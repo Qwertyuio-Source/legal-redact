@@ -223,6 +223,9 @@
       const parts = m[0].split("、");
       if (!parts.length) continue;
       let head = parts[0];
+      const PLACE = new Set(R.PLACE_WORDS || []);
+      const COMMONW = new Set(R.COMMON_WORDS || []);
+      if (PLACE.has(head) || COMMONW.has(head)) continue;
       let headCut = 0;
       if (!(is_valid_name(head) && plausible_name(head))) {
         for (const cut of [1, 2]) {
@@ -478,6 +481,31 @@
     return null;
   }
 
+  const RE_SUE = /([\u4e00-\u9fa5]{2,3})诉(?=[\u4e00-\u9fa5])/g;
+
+  /** 「邓帮岭诉冕宁县人民政府」——被诉方是机关时，X 仍是当事人 */
+  function findSueNames(text, keep) {
+    const out = [];
+    const COMMON = new Set(R.COMMON_WORDS || []);
+    RE_SUE.lastIndex = 0;
+    let m;
+    while ((m = RE_SUE.exec(text))) {
+      const raw = m[1];
+      for (const L of [3, 2]) {
+        if (raw.length < L) continue;
+        const tok = raw.slice(-L);
+        if ((keep && keep.has(tok)) || COMMON.has(tok)) continue;
+        if (!COMMON_SURNAME_SET.has(tok[0])) continue;
+        if (!is_valid_name(tok)) continue;
+        const start = m.index + raw.length - L;
+        out.push({ start, end: start + L, kind: T.PERSON, text: tok,
+                   rule: "sue", priority: PRIORITY.PERSON, sub: "" });
+        break;
+      }
+    }
+    return out;
+  }
+
   function findKeepNames(text) {
     const keep = new Set();
     RE_KEEP_ANCHOR.lastIndex = 0;
@@ -558,9 +586,10 @@
       const picked = [];
       for (const [tok, base] of [[m[1], m.index], [m[2], bStart]]) {
         for (const L of [3, 2]) {
+          if (tok.length < L) continue;
           const t = tok.slice(0, L);
           if (is_valid_name(t) && plausible_name(t)) {
-            picked.push({ s: base, e: base + L, t });
+            picked.push({ s: base, e: base + t.length, t });
             break;
           }
         }
@@ -650,6 +679,7 @@
     spans.push(...findEnumeratedNames(text, keep));
     spans.push(...findCiteAuthors(text, keep));
     spans.push(...findBylineNames(text, keep));
+    spans.push(...findSueNames(text, keep));
     spans.push(...findStandalone(text));
     spans.push(...findPersons(text, keep));
     spans.push(...findPartialNames(text));
