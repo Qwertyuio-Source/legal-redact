@@ -121,6 +121,8 @@ def is_valid_name(tok: str) -> bool:
         return False
     if tok in data.NAME_STOPWORDS or tok in lexicon.stopwords() or tok in lexicon.place_words():
         return False
+    if tok in data.COMMON_WORDS:
+        return False          # 高频普通词（国家/对外/高水平…）不可能是人名
     if tok[-1] in PLACE_TAIL:
         return False
     if RE_ORG_SUFFIX.fullmatch(tok) or any(tok.endswith(s) for s in data.ORG_SUFFIXES):
@@ -280,28 +282,76 @@ def _org_core(name: str) -> str:
 _TABLE_SPLIT = re.compile(r"[\t|\uFF5C]")
 
 
+_TABLE_HEADER_NAME = re.compile(
+    r"(姓名|名字|人名|当事人|原告|被告|申请人|被申请人|负责人|法定代表人|联系人|经办人|"
+    r"代理人|辩护人|股东|员工|职工|收款人|付款人|签署人|签字人|审核人|权利人|义务人|户主|承租人|出借人)")
+
+
 def find_table_names(text: str) -> list[Span]:
-    """表格行首列常见「姓名\t职务\t身份证」这种，没锚点也要认。"""
+    """表格里的姓名（「姓名\t职务\t身份证」这种没有锚点的场景）。
+
+    误判教训：以前只要 2~3 字的单元格长得像人名就认，结果「A\t高水平」「对外\t国国」都被
+    当成人名。现在要求**同一行或表头里有明确的姓名类标签**，宁缺勿滥。
+    """
     spans: list[Span] = []
+    lines = text.split("\n")
+
+    # 先找横向表头（表头行 + 后面若干数据行）
+    header_cols: dict[int, str] = {}
+    for line in lines:
+        if len(_TABLE_SPLIT.findall(line)) < 1:
+            continue
+        cells = [c.strip() for c in _TABLE_SPLIT.split(line)]
+        cols = {i: c for i, c in enumerate(cells) if _TABLE_HEADER_NAME.search(c)}
+        if cols:
+            header_cols = cols
+            break
+
     pos = 0
-    for line in text.split("\n"):
+    for line in lines:
         line_start = pos
         pos += len(line) + 1
         if len(_TABLE_SPLIT.findall(line)) < 1:
             continue
-        cells = _TABLE_SPLIT.split(line)
-        for cell in cells:
-            tok = cell.strip()
-            if not (2 <= len(tok) <= 3) or tok in data.NAME_STOPWORDS:
-                continue
-            if not is_valid_name(tok):
-                continue
-            idx = line.find(tok)
-            if idx < 0:
-                continue
-            spans.append(Span(line_start + idx, line_start + idx + len(tok),
-                              T.PERSON, tok, "table-cell", PRIORITY["PERSON"]))
-    return spans
+        cells = [c.strip() for c in _TABLE_SPLIT.split(line)]
+
+        # 纵向：同一行里「姓名 	 张伟」
+        for i, c in enumerate(cells[:-1]):
+            if _TABLE_HEADER_NAME.search(c):
+                tok = cells[i + 1].strip()
+                spans.extend(_mk_cell_span(line, line_start, tok))
+        # 横向：按表头列取数据行的对应列
+        if header_cols:
+            for i in header_cols:
+                if i < len(cells):
+                    tok = cells[i].strip()
+                    if _TABLE_HEADER_NAME.search(tok):
+                        continue          # 还是表头本身
+                    spans.extend(_mk_cell_span(line, line_start, tok))
+    # 去重（同一位置只留一个）
+    seen = set()
+    out = []
+    for sp in spans:
+        key = (sp.start, sp.end)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(sp)
+    return out
+
+
+def _mk_cell_span(line: str, line_start: int, tok: str) -> list[Span]:
+    if not (2 <= len(tok) <= 3):
+        return []
+    if tok in data.COMMON_WORDS or tok in data.NAME_STOPWORDS:
+        return []
+    if not is_valid_name(tok) or not plausible_name(tok):
+        return []
+    idx = line.find(tok)
+    if idx < 0:
+        return []
+    return [Span(line_start + idx, line_start + idx + len(tok),
+                 T.PERSON, tok, "table-cell", PRIORITY["PERSON"])]
 
 
 RE_NAME_LIST = re.compile(r"[\u4e00-\u9fa5]{2,3}(?:、[\u4e00-\u9fa5]{2,3}){1,}")
