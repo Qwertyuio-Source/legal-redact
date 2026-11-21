@@ -25,6 +25,7 @@ def main():
         "PLACE_WORDS": sorted(lexicon.place_words()),
         "LEX_STOPWORDS": sorted(lexicon.stopwords()),
         "NAME_REJECT_CHARS": "".join(sorted(data.NAME_REJECT_CHARS)),
+        "COMMON_WORDS": sorted(data.COMMON_WORDS),
         "NAME_STOPWORDS": sorted(set(data.NAME_STOPWORDS) | lexicon.stopwords() | lexicon.place_words()),
         "ORG_SUFFIXES": data.ORG_SUFFIXES,
         "ORG_INDUSTRY": list(detectors.ORG_INDUSTRY),
