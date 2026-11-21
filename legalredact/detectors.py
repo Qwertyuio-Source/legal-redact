@@ -837,7 +837,9 @@ def detect(text: str, keep_names: set[str] | None = None) -> list[Span]:
     spans += find_persons(text, keep)
     spans += find_partial_names(text)
     # 已经匿名化过的（张某、丁某某、××）不再二次脱敏，避免「张某→某某某」和「丁某行政」这种碎片
-    spans = [sp for sp in spans if "×" not in sp.text]
+    spans = [sp for sp in spans
+             if "×" not in sp.text
+             and not (sp.kind == T.PERSON and sp.text in data.COMMON_WORDS)]
     spans = resolve(spans)
 
     # 白名单最高优先级：法条、法院、案号绝不遮挡（命中就整段跳过）
