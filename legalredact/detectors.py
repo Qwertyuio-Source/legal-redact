@@ -404,6 +404,8 @@ def find_enumerated_names(text: str, keep: set[str] | None = None) -> list[Span]
         if not parts:
             continue
         head = parts[0]
+        if head in data.COMMON_WORDS or head in lexicon.place_words():
+            continue                     # 黑龙江、江苏这种地名串直接放弃
         head_cut = 0
         # 正则可能多抓了前一个字（「告王伟」），从左边削掉再判
         if not (is_valid_name(head) and plausible_name(head)):
@@ -677,6 +679,30 @@ def find_byline_names(text: str, keep: set[str] | None = None) -> list[Span]:
     return spans
 
 
+RE_SUE = re.compile(r"([\u4e00-\u9fa5]{2,3})诉(?=[\u4e00-\u9fa5])")
+
+
+def find_sue_names(text: str, keep: set[str] | None = None) -> list[Span]:
+    """「邓帮岭诉冕宁县人民政府」——被诉方是机关时，「X诉」里的 X 仍是当事人。"""
+    spans: list[Span] = []
+    for m in RE_SUE.finditer(text):
+        raw = m.group(1)
+        for L in (3, 2):
+            if len(raw) < L:
+                continue
+            tok = raw[-L:]
+            if tok in (keep or set()) or tok in data.COMMON_WORDS:
+                continue
+            if tok[:1] not in data.COMMON_SURNAMES:
+                continue
+            if not is_valid_name(tok):
+                continue
+            start = m.start(1) + len(raw) - L
+            spans.append(Span(start, start + L, T.PERSON, tok, "sue", PRIORITY["PERSON"]))
+            break
+    return spans
+
+
 def find_keep_names(text: str) -> set[str]:
     """法官、律师这些按需求保留的名字，不能被误脱。"""
     keep: set[str] = set()
@@ -759,11 +785,13 @@ def find_persons(text: str, keep: set[str]) -> list[Span]:
         for key in ("a", "b"):
             tok = m.group(key)
             for L in (3, 2):
+                if len(tok) < L:
+                    continue
                 t = tok[:L]
                 if t in (keep or set()):
                     break
                 if is_valid_name(t) and plausible_name(t):
-                    picked.append((m.start(key), m.start(key) + L, t))
+                    picked.append((m.start(key), m.start(key) + len(t), t))
                     break
         if len(picked) == 2:
             for s, e, t in picked:
@@ -833,6 +861,7 @@ def detect(text: str, keep_names: set[str] | None = None) -> list[Span]:
     spans += find_enumerated_names(text, keep)
     spans += find_cite_authors(text, keep)
     spans += find_byline_names(text, keep)
+    spans += find_sue_names(text, keep)
     spans += find_standalone(text)
     spans += find_persons(text, keep)
     spans += find_partial_names(text)
