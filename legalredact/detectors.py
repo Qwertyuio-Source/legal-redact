@@ -538,6 +538,32 @@ def find_orgs(text: str) -> list[Span]:
     return spans
 
 
+_PLACE_MARKS = set("省市区县镇乡村组街道巷路号")
+_ORG_NEXT_CHARS = set("局委府院厅部办站所公司集团会市省区县镇乡")
+
+
+def _bad_name(tok: str, text: str, start: int, L: int) -> bool:
+    """锚点后面的候选值是不是「地名/单位的前半截」——盘州市某资源局 → 盘州 这种，判否。"""
+    if not tok:
+        return True
+    if any(ch in _PLACE_MARKS for ch in tok):
+        return True
+    if tok in data.COMMON_WORDS:
+        return True
+    nxt = text[start + L] if start + L < len(text) else ""
+    if nxt in _ORG_NEXT_CHARS:
+        return True
+    # 后面紧跟虚词/动词 → 这是句子片段，不是人名（「户持 有…」「单方 制作」）
+    if nxt in "的了着有在可会要能对为是不没很太更最被将把让使给也都而且还只就才又再已":
+        return True
+    # 后面 8 个字里出现行政区划/单位词，说明这是个地名或单位名
+    window = text[start: start + 10]
+    if any(w in window for w in ("自治县", "自治州", "自治区", "政府", "委员会", "资源局",
+                                 "管理局", "人民法院", "公司", "事务所")):
+        return True
+    return False
+
+
 def _take_name_after(text: str, pos: int, strict: bool = False) -> tuple[int, int, str] | None:
     """从 pos 开始取一个人名。
 
@@ -567,16 +593,23 @@ def _take_name_after(text: str, pos: int, strict: bool = False) -> tuple[int, in
     if seg[:2] in lexicon.surnames()[1]:
         for L in (4, 3):
             if len(seg) >= L and is_valid_name(seg[:L]) and (ok_next(L) or plausible_name(seg[:L])):
+                if _bad_name(seg[:L], text, start, L):
+                    return None
                 return start, start + L, seg[:L]
 
     # 三字名：后面必须是标点/谓语，且不是「应当承」这种词打头、第三个字不像动词
     if (len(seg) >= 3 and seg[:2] not in data.NAME_STOPWORDS
-            and is_valid_name(seg[:3]) and seg[2] not in VERB_CHARS and ok_next(3)):
+            and is_valid_name(seg[:3]) and seg[2] not in VERB_CHARS and ok_next(3)
+            and plausible_name(seg[:3])):
+        if _bad_name(seg[:3], text, start, 3):
+            return None
         return start, start + 3, seg[:3]
 
     # 两字名
     if len(seg) >= 2 and is_valid_name(seg[:2]):
         if strict and not ok_next(2) and not plausible_name(seg[:2]):
+            return None
+        if _bad_name(seg[:2], text, start, 2):
             return None
         return start, start + 2, seg[:2]
     return None
@@ -803,6 +836,8 @@ def detect(text: str, keep_names: set[str] | None = None) -> list[Span]:
     spans += find_standalone(text)
     spans += find_persons(text, keep)
     spans += find_partial_names(text)
+    # 已经匿名化过的（张某、丁某某、××）不再二次脱敏，避免「张某→某某某」和「丁某行政」这种碎片
+    spans = [sp for sp in spans if "×" not in sp.text]
     spans = resolve(spans)
 
     # 白名单最高优先级：法条、法院、案号绝不遮挡（命中就整段跳过）
