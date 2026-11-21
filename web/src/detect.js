@@ -117,7 +117,11 @@
       cut = Math.min(cut, cp + 1 + 8);
       tok = tok.slice(0, cut);
       let nLead = 0;
+      for (const w of ["参见", "载", "见", "包括", "以及"]) {
+        if (tok.startsWith(w) && tok.length - w.length >= 6) { tok = tok.slice(w.length); nLead += w.length; break; }
+      }
       while (tok.length && ORG_LEAD.has(tok[0])) { tok = tok.slice(1); nLead++; }
+      if (tok[0] === "(" || tok[0] === "（") continue;   // 「(加纳)科菲」这种是人名不是单位
       const cp2 = Math.max(tok.indexOf("）"), tok.indexOf(")"));
       if (cp2 < 0) continue;
       const tail = tok.length - cp2 - 1;
@@ -211,19 +215,45 @@
   /** 顿号并列的人名：「王伟、李娜、赵强」 */
   function findEnumeratedNames(text, keep) {
     const out = [];
+    const COMMON = new Set(R.COMMON_SURNAMES || []);
+    const isCommonSurname = (ch) => COMMON.has(ch);
     RE_NAME_LIST.lastIndex = 0;
     let m;
     while ((m = RE_NAME_LIST.exec(text))) {
-      let pos = m.index;
-      for (const raw of m[0].split("、")) {
-        let picked = null;
-        for (const L of [raw.length, 2]) {
-          if (L < 2 || L > raw.length) continue;
-          const t = raw.slice(0, L);
-          if (keep && keep.has(t)) break;
-          if (is_valid_name(t) && plausible_name(t)) { picked = t; break; }
+      const parts = m[0].split("、");
+      if (!parts.length) continue;
+      let head = parts[0];
+      let headCut = 0;
+      if (!(is_valid_name(head) && plausible_name(head))) {
+        for (const cut of [1, 2]) {
+          const t2 = head.slice(cut);
+          if (t2.length >= 2 && isCommonSurname(t2[0]) && is_valid_name(t2) && plausible_name(t2)) {
+            head = t2; headCut = cut; break;
+          }
         }
-        if (picked) {
+      }
+      if (!isCommonSurname(head[0])) continue;
+      const before = text.slice(Math.max(0, m.index - 6), m.index);
+      const isCitation = ["参见", "载", "见", "如", "据", "阅"].some((w) => before.endsWith(w));
+      if (isCitation) {
+        if (!is_valid_name(head)) continue;
+      } else if (!(is_valid_name(head) && plausible_name(head))) {
+        continue;
+      }
+      let pos = m.index + headCut;
+      for (let ri = 0; ri < parts.length; ri++) {
+        const raw = ri === 0 ? head : parts[ri];
+        let picked = null;
+        if (isCitation && raw.length >= 2 && raw.length <= 3 && isCommonSurname(raw[0]) && is_valid_name(raw)) {
+          picked = raw;
+        } else if (raw.length >= 2 && raw.length <= 3 && isCommonSurname(raw[0]) &&
+                   is_valid_name(raw) && plausible_name(raw)) {
+          picked = raw;
+        } else if (raw.length === 3 && !S.GIVEN_NAME_CHARS.has(raw[2]) && isCommonSurname(raw[0]) &&
+                   is_valid_name(raw.slice(0, 2)) && plausible_name(raw.slice(0, 2))) {
+          picked = raw.slice(0, 2);
+        }
+        if (picked && !(keep && keep.has(picked))) {
           out.push({ start: pos, end: pos + picked.length, kind: T.PERSON, text: picked,
                      rule: "name-list", priority: PRIORITY.PERSON, sub: "" });
         }
@@ -233,26 +263,80 @@
     return out;
   }
 
+  const RE_CITE_AUTHOR = /([\u4e00-\u9fa5]{2,4})[：:]\s*[“"《]/g;
+  const COMMON_SURNAME_SET = new Set(R.COMMON_SURNAMES || []);
+
+  /** 引注作者：「黄进：“…”」「马忠法:《…》」 */
+  function findCiteAuthors(text, keep) {
+    const out = [];
+    RE_CITE_AUTHOR.lastIndex = 0;
+    let m;
+    while ((m = RE_CITE_AUTHOR.exec(text))) {
+      let tok = m[1];
+      let start = m.index;
+      if ((keep && keep.has(tok)) || (R.COMMON_WORDS || []).indexOf(tok) >= 0) continue;
+      for (const suf of ["主编", "编著", "编", "著"]) {
+        if (tok.endsWith(suf) && tok.length - suf.length >= 2) { tok = tok.slice(0, -suf.length); break; }
+      }
+      if (!is_valid_name(tok)) {
+        let fixed = null;
+        for (const L of [4, 3, 2]) {
+          if (L < tok.length) {
+            const tail = tok.slice(-L);
+            if (COMMON_SURNAME_SET.has(tail[0]) && is_valid_name(tail)) { fixed = [tail, start + tok.length - L]; break; }
+          }
+        }
+        if (!fixed) continue;
+        tok = fixed[0]; start = fixed[1];
+      }
+      if (!COMMON_SURNAME_SET.has(tok[0])) continue;
+      out.push({ start, end: start + tok.length, kind: T.PERSON, text: tok,
+                 rule: "cite-author", priority: PRIORITY.PERSON, sub: "" });
+    }
+    return out;
+  }
+
+  const RE_BYLINE = /([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5]{1,2})\s*\*{1,2}|([\u4e00-\u9fa5]{2,4})\*{1,2}/g;
+
+  /** 署名行：「李 鸣*」「黄蓬北**」 */
+  function findBylineNames(text, keep) {
+    const out = [];
+    RE_BYLINE.lastIndex = 0;
+    let m;
+    while ((m = RE_BYLINE.exec(text))) {
+      const tok = m[1] ? (m[1] + m[2]) : m[3];
+      const start = m[1] ? m.index : m.index + m[0].indexOf(m[3]);
+      if ((keep && keep.has(tok)) || (R.COMMON_WORDS || []).indexOf(tok) >= 0) continue;
+      if (!COMMON_SURNAME_SET.has(tok[0]) || !is_valid_name(tok)) continue;
+      out.push({ start, end: start + tok.length, kind: T.PERSON, text: tok,
+                 rule: "byline", priority: PRIORITY.PERSON, sub: "" });
+    }
+    return out;
+  }
+
   const RE_STANDALONE_ADDR = new RegExp(
     "^(?:[\\u4e00-\\u9fa5]{2,10}(?:省|自治区|特别行政区)?)[\\u4e00-\\u9fa5\\d]{2,10}" +
     "(?:市|自治州|地区)[\\u4e00-\\u9fa5\\d]{2,12}(?:区|县|市)?[\\u4e00-\\u9fa5\\d]{0,20}" +
     "(?:路|街|巷|道|村|镇|号)[\\u4e00-\\u9fa5\\dA-Za-z\\-—–－]{0,20}$");
 
-  /** 整行就是地址（表格摊平后的典型形态） */
+  /** 没锚点、整行就是地址（表格摊平后最常见） */
   function findStandalone(text) {
     const out = [];
     let pos = 0;
     for (const line of text.split("\n")) {
       const lineStart = pos;
       pos += line.length + 1;
-      const tok = line.trim();
+      let tok = line.trim();
       if (!tok || tok.length < 6) continue;
-      if (tok.length <= 60 && RE_STANDALONE_ADDR.test(tok)) {
-        const hits = ["省", "市", "区", "县", "路", "街", "号", "镇", "村"].filter((k) => tok.includes(k)).length;
+      const stripped = tok.replace(/^[地住]\s*址\s*[：:]\s*/, "");
+      let offset;
+      if (stripped !== tok) { tok = stripped; offset = lineStart + line.indexOf(tok); }
+      else { offset = lineStart + line.indexOf(tok); }
+      if (tok.length >= 8 && tok.length <= 60 && RE_STANDALONE_ADDR.test(tok)) {
+        const hits = ["省", "市", "区", "县", "路", "街", "号", "镇", "村"].filter((k) => tok.indexOf(k) >= 0).length;
         if (hits >= 2) {
-          const offset = lineStart + line.indexOf(tok);
-          out.push({ start: offset, end: offset + tok.length, kind: T.ADDRESS,
-                     text: tok, rule: "standalone-addr", priority: PRIORITY.ADDRESS, sub: "" });
+          out.push({ start: offset, end: offset + tok.length, kind: T.ADDRESS, text: tok,
+                     rule: "standalone-addr", priority: PRIORITY.ADDRESS, sub: "" });
         }
       }
     }
@@ -282,6 +366,25 @@
     return out;
   }
 
+  const ORG_LEAD_WORDS = ["参见", "载", "包括", "以及", "此外", "其中", "比如", "例如", "如",
+    "据", "见", "由", "在", "对", "于", "同", "及", "和", "与", "从", "是", "为", "被", "将",
+    "已", "现", "也", "均", "都"];
+  const ORG_FRAGMENTS = new Set(["研究中心", "法治学院", "国语大学", "研究院", "研究所"]);
+  const ORG_VERB_PHRASES = ["取消", "实现", "推进", "加强", "包括", "进入", "建立", "完善",
+    "形成", "成为", "作为", "进行", "开展", "具备", "拥有", "达到", "促进", "推动", "支持",
+    "参与", "涉及", "属于", "存在", "具有"];
+
+  function trimOrgLead(cand) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const w of ORG_LEAD_WORDS) {
+        if (cand.startsWith(w) && cand.length - w.length >= 4) { cand = cand.slice(w.length); changed = true; break; }
+      }
+    }
+    return cand;
+  }
+
   function findOrgs(text) {
     const spans = [];
     const seen = new Set();
@@ -298,15 +401,19 @@
         if (S.BOUNDARY_CHARS.has(ch) && !allowed.includes(ch)) break;
         j -= 1;
       }
-      const cand = trimOrgCandidate(text.slice(j, start));
+      const cand = trimOrgLead(trimOrgCandidate(text.slice(j, start)));
       if (!orgOk(cand, suffix, text, end)) continue;
       const cstart = start - cand.length;
       if (cstart < 0) continue;
       const key = cstart + ":" + end;
       if (seen.has(key)) continue;
       seen.add(key);
+      const final = text.slice(cstart, end);
+      if (ORG_FRAGMENTS.has(final)) continue;
+      if (ORG_VERB_PHRASES.some((ph) => final.indexOf(ph) >= 0)) continue;
+      if (final.length <= 3 && !/(公司|集团|大学|学院|医院)$/.test(final)) continue;
       // 替身保留类型尾巴：北京鼎盛科技有限公司 → 某某某科技有限公司
-      const sub = orgTail(text.slice(cstart, end)) || suffix;
+      const sub = orgTail(final) || suffix;
       spans.push({ start: cstart, end, kind: T.ORG, text: text.slice(cstart, end),
                    rule: "org-suffix", priority: PRIORITY.ORG, sub });
     }
@@ -518,6 +625,8 @@
     spans.push(...findOrgShorts(text, orgSpans.concat(spans.filter((x) => x.kind === T.ORG))));
     spans.push(...findTableNames(text));
     spans.push(...findEnumeratedNames(text, keep));
+    spans.push(...findCiteAuthors(text, keep));
+    spans.push(...findBylineNames(text, keep));
     spans.push(...findStandalone(text));
     spans.push(...findPersons(text, keep));
     spans.push(...findPartialNames(text));
