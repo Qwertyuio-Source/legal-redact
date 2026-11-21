@@ -420,6 +420,25 @@
     return spans;
   }
 
+  const PLACE_MARKS = new Set("省市区县镇乡村组街道巷路号".split(""));
+  const ORG_NEXT_CHARS = new Set("局委府院厅部办站所公司集团会市省区县镇乡".split(""));
+  const FUNC_AFTER = new Set("的了着有在可会要能对为是不没很太更最被将把让使给也都而且还只就才又再已".split(""));
+  const ORG_WINDOW_WORDS = ["自治县", "自治州", "自治区", "政府", "委员会", "资源局",
+    "管理局", "人民法院", "公司", "事务所"];
+
+  /** 锚点后面的候选值是不是地名/单位的前半截 */
+  function badName(tok, text, start, L) {
+    if (!tok) return true;
+    for (const ch of tok) if (PLACE_MARKS.has(ch)) return true;
+    if ((R.COMMON_WORDS || []).indexOf(tok) >= 0) return true;
+    const nxt = start + L < text.length ? text[start + L] : "";
+    if (ORG_NEXT_CHARS.has(nxt)) return true;
+    if (FUNC_AFTER.has(nxt)) return true;
+    const win = text.slice(start, start + 10);
+    if (ORG_WINDOW_WORDS.some((w) => win.indexOf(w) >= 0)) return true;
+    return false;
+  }
+
   function takeNameAfter(text, pos, strict) {
     let i = pos;
     while (i < text.length && " 　\t：:".includes(text[i])) i += 1;
@@ -439,16 +458,20 @@
       for (const L of [4, 3]) {
         if (seg.length >= L && is_valid_name(seg.slice(0, L)) &&
             (okNext(L) || plausible_name(seg.slice(0, L)))) {
+          if (badName(seg.slice(0, L), text, start, L)) return null;
           return { start, end: start + L, name: seg.slice(0, L) };
         }
       }
     }
     if (seg.length >= 3 && !S.NAME_STOPWORDS.has(seg.slice(0, 2)) &&
-        is_valid_name(seg.slice(0, 3)) && !S.VERB_CHARS.has(seg[2]) && okNext(3)) {
+        is_valid_name(seg.slice(0, 3)) && !S.VERB_CHARS.has(seg[2]) && okNext(3) &&
+        plausible_name(seg.slice(0, 3))) {
+      if (badName(seg.slice(0, 3), text, start, 3)) return null;
       return { start, end: start + 3, name: seg.slice(0, 3) };
     }
     if (seg.length >= 2 && is_valid_name(seg.slice(0, 2))) {
       if (!strict || okNext(2) || plausible_name(seg.slice(0, 2))) {
+        if (badName(seg.slice(0, 2), text, start, 2)) return null;
         return { start, end: start + 2, name: seg.slice(0, 2) };
       }
     }
