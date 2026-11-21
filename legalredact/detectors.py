@@ -143,6 +143,23 @@ def plausible_name(tok: str) -> bool:
     return all(ch in chars for ch in rest)
 
 
+_ORG_LEAD_WORDS = ("参见", "载", "包括", "以及", "此外", "其中", "比如", "例如", "如",
+                   "据", "见", "由", "在", "对", "于", "同", "及", "和", "与", "从",
+                   "是", "为", "被", "将", "已", "现", "也", "均", "都")
+
+
+def _trim_org_lead(cand: str) -> str:
+    changed = True
+    while changed:
+        changed = False
+        for w in _ORG_LEAD_WORDS:
+            if cand.startswith(w) and len(cand) - len(w) >= 4:
+                cand = cand[len(w):]
+                changed = True
+                break
+    return cand
+
+
 def _trim_org_candidate(cand: str) -> str:
     """切掉候选里混进来的前导动词/身份词，返回真正的字号部分。"""
     cut = 0
@@ -155,7 +172,18 @@ def _trim_org_candidate(cand: str) -> str:
     return cand.strip()
 
 
+_ORG_FRAGMENTS = frozenset({"研究中心", "法治学院", "国语大学", "研究院", "研究所"})
+# 单位名里绝不会出现的动词短语（出现说明是从句子里截出来的）
+_ORG_VERB_PHRASES = ("取消", "实现", "推进", "加强", "包括", "进入", "建立", "完善",
+                     "形成", "成为", "作为", "进行", "开展", "具备", "拥有", "达到",
+                     "促进", "推动", "支持", "参与", "涉及", "属于", "存在", "具有")
+
+
 def _org_ok(cand: str, suffix: str, text: str, end: int) -> bool:
+    if cand in _ORG_FRAGMENTS:
+        return False
+    if any(ph in cand for ph in _ORG_VERB_PHRASES):
+        return False
     if len(cand) < 2:
         return False
     if cand in data.GENERIC_ORG_WORDS:
@@ -237,6 +265,11 @@ def find_paren_orgs(text: str, taken: list[Span] | None = None) -> list[Span]:
         # 去掉开头的介词/连词（「由卓燃…」→「卓燃…」）
         lead = set("由与和及在是对向给被让使据经项其该")
         n_lead = 0
+        for w in ("参见", "载", "见", "包括", "以及"):
+            if tok.startswith(w) and len(tok) - len(w) >= 6:
+                tok = tok[len(w):]
+                n_lead += len(w)
+                break
         while tok and tok[0] in lead:
             tok = tok[1:]
             n_lead += 1
@@ -358,30 +391,60 @@ RE_NAME_LIST = re.compile(r"[\u4e00-\u9fa5]{2,3}(?:、[\u4e00-\u9fa5]{2,3}){1,}"
 
 
 def find_enumerated_names(text: str, keep: set[str] | None = None) -> list[Span]:
-    """顿号并列的人名：「王伟、李娜、赵强」。逐个校验，避免把「北京、上海」当人名。"""
+    """顿号并列的人名：「王伟、李娜、赵强」。
+
+    误判教训（真实文档）：「全方位、深层次、高水平推进」「广西、河北、云南」都被当成并列人名。
+    现在两条硬约束：
+      1. 每一项的姓氏必须在**常见姓氏表**里（顶级冷门姓不认）
+      2. 首项必须是完整有效人名，不允许截断；后续项才允许把「赵强均到庭」截成「赵强」
+    """
     spans: list[Span] = []
     for m in RE_NAME_LIST.finditer(text):
-        pos = m.start()
-        for raw in m.group(0).split("、"):
+        parts = m.group(0).split("、")
+        if not parts:
+            continue
+        head = parts[0]
+        head_cut = 0
+        # 正则可能多抓了前一个字（「告王伟」），从左边削掉再判
+        if not (is_valid_name(head) and plausible_name(head)):
+            for cut in (1, 2):
+                if len(head) - cut >= 2:
+                    t2 = head[cut:]
+                    if t2[:1] in data.COMMON_SURNAMES and is_valid_name(t2) and plausible_name(t2):
+                        head, head_cut = t2, cut
+                        break
+        if head[:1] not in data.COMMON_SURNAMES:
+            continue
+        # 「参见张琼斯、范子萌」这种引注列表：前面有引注标记时放宽名字用字校验
+        before = text[max(0, m.start() - 6): m.start()]
+        is_citation = any(before.endswith(w) for w in ("参见", "载", "见", "如", "据", "阅"))
+        if is_citation:
+            if not is_valid_name(head):
+                continue
+        elif not (is_valid_name(head) and plausible_name(head)):
+            continue                     # 首项不成立，整串放弃
+        pos = m.start() + head_cut
+        for idx, raw in enumerate(parts):
+            if idx == 0:
+                raw = head
             picked = None
-            for L in (len(raw), 2):
-                if L < 2 or L > len(raw):
-                    continue
-                t = raw[:L]
-                if t in (keep or set()):
-                    break
-                if is_valid_name(t) and plausible_name(t):
-                    picked = t
-                    break
-            if picked:
-                # 前缀回退时，位置按 raw 在整句里的起点算
+            if is_citation and 2 <= len(raw) <= 3 and raw[:1] in data.COMMON_SURNAMES \
+                    and is_valid_name(raw):
+                picked = raw          # 引注列表：整项当名字，不截断
+            elif raw[:1] in data.COMMON_SURNAMES and 2 <= len(raw) <= 3 \
+                    and is_valid_name(raw) and plausible_name(raw):
+                picked = raw
+            elif len(raw) == 3 and raw[2] not in lexicon.given_chars() \
+                    and raw[:1] in data.COMMON_SURNAMES \
+                    and is_valid_name(raw[:2]) and plausible_name(raw[:2]):
+                picked = raw[:2]          # 「李娜签订」→ 李娜
+            if picked and picked not in (keep or set()):
                 spans.append(Span(pos, pos + len(picked), T.PERSON, picked,
                                   "name-list", PRIORITY["PERSON"]))
             pos += len(raw) + 1
     return spans
 
 
-# 整行/整格就是地址或号码（表格被摊平成一行一行时的典型形态）
 RE_STANDALONE_ADDR = re.compile(
     r"^(?:[\u4e00-\u9fa5]{2,10}(?:省|自治区|特别行政区)?)[\u4e00-\u9fa5\d]{2,10}"
     r"(?:市|自治州|地区)[\u4e00-\u9fa5\d]{2,12}(?:区|县|市)?[\u4e00-\u9fa5\d]{0,20}"
@@ -389,7 +452,7 @@ RE_STANDALONE_ADDR = re.compile(
 
 
 def find_standalone(text: str) -> list[Span]:
-    """没锚点、整行就是地址/证件号/电话的情况（docx/xlsx 表格最常见）。"""
+    """没锚点、整行就是地址的情况（docx/xlsx 表格被摊平后最常见）。"""
     spans: list[Span] = []
     pos = 0
     for line in text.split("\n"):
@@ -398,7 +461,6 @@ def find_standalone(text: str) -> list[Span]:
         tok = line.strip()
         if not tok or len(tok) < 6:
             continue
-        # 「地    址：xxx」这种标签先剥掉
         stripped = re.sub(r"^[地住]\s*址\s*[：:]\s*", "", tok)
         if stripped != tok:
             offset = line_start + line.find(stripped)
@@ -406,7 +468,6 @@ def find_standalone(text: str) -> list[Span]:
         else:
             offset = line_start + line.find(tok)
         if 8 <= len(tok) <= 60 and RE_STANDALONE_ADDR.match(tok):
-            # 至少命中 3 个地址特征，避免把项目名当地址
             hits = sum(1 for k in ("省", "市", "区", "县", "路", "街", "号", "镇", "村") if k in tok)
             if hits >= 2:
                 spans.append(Span(offset, offset + len(tok), T.ADDRESS, tok,
@@ -456,7 +517,7 @@ def find_orgs(text: str) -> list[Span]:
         while j > 0 and (start - (j - 1)) <= limit and text[j - 1] not in ORG_SCAN_STOP:
             j -= 1
         raw = text[j:start]
-        cand = _trim_org_candidate(raw)
+        cand = _trim_org_lead(_trim_org_candidate(raw))
         if not _org_ok(cand, suffix, text, end):
             continue
         cstart = start - len(cand)
@@ -466,8 +527,13 @@ def find_orgs(text: str) -> list[Span]:
             continue
         # 去掉前面仍然是截断的情况（左邻是汉字且不是常见修饰，说明可能切多了）
         seen.add((cstart, end))
+        final = text[cstart:end]
+        if final in _ORG_FRAGMENTS or any(ph in final for ph in _ORG_VERB_PHRASES):
+            continue
+        if len(final) <= 3 and not any(final.endswith(x) for x in ("公司", "集团", "大学", "学院", "医院")):
+            continue
         # 替身保留类型尾巴：北京鼎盛科技有限公司 → 某某某科技有限公司
-        sub = org_tail(text[cstart:end]) or suffix
+        sub = org_tail(final) or suffix
         spans.append(Span(cstart, end, T.ORG, text[cstart:end], "org-suffix", PRIORITY["ORG"], sub))
     return spans
 
@@ -514,6 +580,68 @@ def _take_name_after(text: str, pos: int, strict: bool = False) -> tuple[int, in
             return None
         return start, start + 2, seg[:2]
     return None
+
+
+RE_CITE_AUTHOR = re.compile(r"([\u4e00-\u9fa5]{2,4})[：:]\s*[“\"《]")
+
+
+def find_cite_authors(text: str, keep: set[str] | None = None) -> list[Span]:
+    """引注里的作者名：「黄进：“论统筹推进…”」「马忠法:《…》」。
+
+    学术/文书脚注里作者名很密，但没有「原告：」这类锚点，单独一条规则兜。
+    """
+    spans: list[Span] = []
+    for m in RE_CITE_AUTHOR.finditer(text):
+        tok = m.group(1)
+        if tok in (keep or set()) or tok in data.COMMON_WORDS:
+            continue
+        # 引注作者只要求「像名字」，不套 given-chars 白名单（马忠法、黄文艺这种）
+        for suf in ("主编", "编著", "编", "著"):
+            if tok.endswith(suf) and len(tok) - len(suf) >= 2:
+                tok = tok[: -len(suf)]
+                break
+        start = m.start(1)
+        if not is_valid_name(tok):
+            # 「参见黄进：」「以上黄文艺：」——从尾部试 4/3/2 字
+            fixed = None
+            for L in (4, 3, 2):
+                if L < len(tok):
+                    tail = tok[-L:]
+                    if tail[:1] in data.COMMON_SURNAMES and is_valid_name(tail):
+                        fixed = (tail, m.start(1) + len(tok) - L)
+                        break
+            if not fixed:
+                continue
+            tok, start = fixed
+        if tok[:1] not in data.COMMON_SURNAMES:
+            continue
+        spans.append(Span(start, start + len(tok), T.PERSON, tok,
+                          "cite-author", PRIORITY["PERSON"]))
+    return spans
+
+
+RE_BYLINE = re.compile(r"([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5]{1,2})\s*\*{1,2}|([\u4e00-\u9fa5]{2,4})\*{1,2}")
+
+
+def find_byline_names(text: str, keep: set[str] | None = None) -> list[Span]:
+    """文章/文书的署名行：「李 鸣*」「黄蓬北**」（带星号的作者）。"""
+    spans: list[Span] = []
+    for m in RE_BYLINE.finditer(text):
+        if m.group(1):
+            tok = m.group(1) + m.group(2)
+            start = m.start(1)
+        else:
+            tok = m.group(3)
+            start = m.start(3)
+        if tok in (keep or set()) or tok in data.COMMON_WORDS:
+            continue
+        if tok[:1] not in data.COMMON_SURNAMES:
+            continue
+        if not is_valid_name(tok):
+            continue
+        spans.append(Span(start, start + len(tok), T.PERSON, tok,
+                          "byline", PRIORITY["PERSON"]))
+    return spans
 
 
 def find_keep_names(text: str) -> set[str]:
@@ -670,6 +798,8 @@ def detect(text: str, keep_names: set[str] | None = None) -> list[Span]:
     spans += find_org_shorts(text, org_spans + [x for x in spans if x.kind == T.ORG])
     spans += find_table_names(text)
     spans += find_enumerated_names(text, keep)
+    spans += find_cite_authors(text, keep)
+    spans += find_byline_names(text, keep)
     spans += find_standalone(text)
     spans += find_persons(text, keep)
     spans += find_partial_names(text)
